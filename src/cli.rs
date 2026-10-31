@@ -58,6 +58,9 @@ pub enum Command {
         /// Multiplies raster dimensions, not logical coordinates
         #[arg(long)]
         scale: Option<f64>,
+        /// Also copy the rendered bitmap to the clipboard
+        #[arg(long, conflicts_with = "all")]
+        clipboard: bool,
     },
     /// Check frames without rendering
     Validate {
@@ -98,12 +101,14 @@ pub fn run(arguments: Cli) -> Result<ExitCode> {
             output,
             format,
             scale,
+            clipboard,
             ..
         }) => {
             let options = RenderOptions {
                 output: output.as_deref(),
                 format: format.as_deref(),
                 scale: *scale,
+                copy_to_clipboard: *clipboard,
             };
             return run_render(&arguments, frame.as_deref(), &options);
         }
@@ -178,6 +183,7 @@ struct RenderOptions<'a> {
     output: Option<&'a Path>,
     format: Option<&'a str>,
     scale: Option<f64>,
+    copy_to_clipboard: bool,
 }
 
 fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> Result<ExitCode> {
@@ -270,6 +276,16 @@ fn render_frame(
         .into());
     }
     renderer::write_png(&canvas, &output)?;
+    let mut warnings = scene.warnings;
+    if options.copy_to_clipboard {
+        // The file is already saved, so a missing clipboard must not fail the render.
+        if let Err(error) = renderer::copy_to_clipboard(&canvas) {
+            warnings.push(Diagnostic::new(
+                "clipboard_unavailable",
+                format!("the render was saved but not copied: {error}"),
+            ));
+        }
+    }
     Ok(RenderResult {
         success: true,
         frame: scene.id,
@@ -277,7 +293,7 @@ fn render_frame(
         width: canvas.width(),
         height: canvas.height(),
         format: "png",
-        warnings: scene.warnings,
+        warnings,
     })
 }
 

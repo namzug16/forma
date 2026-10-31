@@ -96,6 +96,22 @@ pub fn write_png(canvas: &Pixmap, path: &Path) -> Result<()> {
     result
 }
 
+pub fn copy_to_clipboard(canvas: &Pixmap) -> Result<(), arboard::Error> {
+    let straight_rgba: Vec<u8> = canvas
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let pixel = pixel.demultiply();
+            [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]
+        })
+        .collect();
+    arboard::Clipboard::new()?.set_image(arboard::ImageData {
+        width: canvas.width() as usize,
+        height: canvas.height() as usize,
+        bytes: straight_rgba.into(),
+    })
+}
+
 fn draw_nodes(nodes: &[SceneNode], canvas: &mut Pixmap, parent: Affine) {
     for node in nodes {
         draw_node(node, canvas, parent);
