@@ -130,6 +130,19 @@ impl Bounds {
         ]
     }
 
+    fn intersection(self, other: Self) -> Option<Self> {
+        let left = self.x.max(other.x);
+        let top = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+        (left < right && top < bottom).then_some(Self {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
+    }
+
     /// The axis-aligned box around this box after `transform`.
     pub fn transformed(self, transform: Affine) -> Self {
         Self::from_points(self.corners().map(|(x, y)| transform.apply(x, y)))
@@ -197,6 +210,40 @@ pub struct SceneNode {
     pub kind: SceneKind,
 }
 
+/// Where a node ends up. Bounds cover the node's box, not stroke width or antialiasing.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeLayout {
+    pub world: Affine,
+    pub world_bounds: Bounds,
+    /// `None` when nothing of the node is inside the frame and its ancestors' clips.
+    pub clipped_bounds: Option<Bounds>,
+}
+
+impl NodeLayout {
+    pub fn of(node: &SceneNode, parent: Affine, visible_area: Bounds) -> Self {
+        let world = node.transform.then(parent);
+        let world_bounds = node.bounds.transformed(world);
+        Self {
+            world,
+            world_bounds,
+            clipped_bounds: world_bounds.intersection(visible_area),
+        }
+    }
+
+    pub fn overflows_clip(&self) -> bool {
+        self.clipped_bounds != Some(self.world_bounds)
+    }
+
+    /// For a rotated clip this is the box around it, so it can overestimate what is visible.
+    pub fn children_visible_area(&self, clip: bool, visible_area: Bounds) -> Bounds {
+        if clip {
+            self.clipped_bounds.unwrap_or(Bounds::sized(0.0, 0.0))
+        } else {
+            visible_area
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Scene {
     pub id: String,
@@ -205,6 +252,12 @@ pub struct Scene {
     pub background: Option<Paint>,
     pub nodes: Vec<SceneNode>,
     pub warnings: Vec<Diagnostic>,
+}
+
+impl Scene {
+    pub fn frame_area(&self) -> Bounds {
+        Bounds::sized(self.width, self.height)
+    }
 }
 
 /// Everything outside a frame document that resolving it can depend on.
@@ -236,14 +289,45 @@ pub fn build(frame: &Frame, resources: &Resources) -> Result<Scene, Failure> {
     if !builder.diagnostics.is_empty() {
         return Err(Failure(builder.diagnostics));
     }
-    Ok(Scene {
+    let mut scene = Scene {
         id: header.id.clone(),
         width: width.expect("failures were reported above"),
         height: height.expect("failures were reported above"),
         background,
         nodes,
         warnings: builder.warnings,
-    })
+    };
+    let mut clip_warnings = Vec::new();
+    warn_about_clipped_nodes(
+        &scene.nodes,
+        Affine::IDENTITY,
+        scene.frame_area(),
+        &mut clip_warnings,
+    );
+    scene.warnings.append(&mut clip_warnings);
+    Ok(scene)
+}
+
+fn warn_about_clipped_nodes(
+    nodes: &[SceneNode],
+    parent: Affine,
+    visible_area: Bounds,
+    warnings: &mut Vec<Diagnostic>,
+) {
+    for node in nodes {
+        let layout = NodeLayout::of(node, parent, visible_area);
+        let has_area = node.bounds.width > 0.0 && node.bounds.height > 0.0;
+        if node.visible && has_area && layout.clipped_bounds.is_none() {
+            warnings.push(
+                Diagnostic::new("element_clipped", "this node is entirely clipped")
+                    .on_layer(node.id.clone()),
+            );
+        }
+        if let SceneKind::Group { children, clip } = &node.kind {
+            let children_area = layout.children_visible_area(*clip, visible_area);
+            warn_about_clipped_nodes(children, layout.world, children_area, warnings);
+        }
+    }
 }
 
 struct SceneBuilder<'a> {

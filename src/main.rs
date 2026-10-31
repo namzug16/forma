@@ -3,6 +3,7 @@ mod cli;
 mod diagnostics;
 mod document;
 mod frames;
+mod inspect;
 mod project;
 mod renderer;
 mod scene;

@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::frames::{self, FrameFile};
+use crate::inspect;
 use crate::project::{self, Project};
 use crate::renderer;
 use crate::scene::Resources;
@@ -67,6 +68,14 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Report the resolved hierarchy, transforms and bounds of a frame
+    Inspect {
+        /// Frame name, path relative to the frames directory, or explicit ./ path
+        frame: String,
+        /// Report only the layer with this id
+        #[arg(long)]
+        layer: Option<String>,
+    },
     /// Print the resolved design tokens
     Tokens,
     /// Print the document JSON Schema
@@ -78,6 +87,9 @@ pub enum Command {
 pub fn run(arguments: Cli) -> Result<ExitCode> {
     match &arguments.command {
         Some(Command::Init { path }) => run_init(path.clone(), arguments.json)?,
+        Some(Command::Inspect { frame, layer }) => {
+            run_inspect(&arguments, frame, layer.as_deref())?;
+        }
         Some(Command::Tokens) => run_tokens(&arguments)?,
         Some(Command::Schema) => println!("{:#}", document::json_schema()),
         Some(Command::List) | None => run_list(&arguments)?,
@@ -339,6 +351,20 @@ fn run_validate(arguments: &Cli, frame: Option<&str>) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn run_inspect(arguments: &Cli, frame: &str, layer: Option<&str>) -> Result<()> {
+    let project = open_project(arguments)?;
+    let resources = project.resources()?;
+    let file = frames::resolve_reference(&project, frame)?;
+    let scene = frames::load_scene(&file, &resources)?;
+    let report = inspect::report(&scene, layer)?;
+    if arguments.json {
+        println!("{report:#}");
+    } else {
+        inspect::print_outline(&report);
+    }
+    Ok(())
 }
 
 fn run_tokens(arguments: &Cli) -> Result<()> {
