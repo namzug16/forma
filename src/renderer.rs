@@ -6,8 +6,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tiny_skia::{
     Color as SkiaColor, FillRule, GradientStop, LineCap as SkiaLineCap, LineJoin as SkiaLineJoin,
-    LinearGradient, Paint as SkiaPaint, PathBuilder, Pixmap, Point, RadialGradient, Rect, Shader,
-    SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
+    LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap, PixmapPaint, Point,
+    RadialGradient, Rect, Shader, SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
 };
 
 use crate::diagnostics::Diagnostic;
@@ -102,7 +102,43 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
     if !node.visible || node.opacity == 0.0 {
         return;
     }
-    draw_content(node, canvas, node.transform.then(parent));
+    let world = node.transform.then(parent);
+    let clip = matches!(node.kind, SceneKind::Group { clip: true, .. });
+    if node.opacity >= 1.0 && !clip {
+        draw_content(node, canvas, world);
+        return;
+    }
+    // Drawing into a layer makes opacity and clipping apply to the composited result, not to
+    // each child, and nested clips compose because each layer is masked on its way out.
+    let mut layer = Pixmap::new(canvas.width(), canvas.height())
+        .expect("a layer has the size of an existing canvas");
+    draw_content(node, &mut layer, world);
+    let mask = clip
+        .then(|| clip_mask(canvas, node.bounds, world))
+        .flatten();
+    if clip && mask.is_none() {
+        return;
+    }
+    let paint = PixmapPaint {
+        opacity: node.opacity as f32,
+        ..PixmapPaint::default()
+    };
+    canvas.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &paint,
+        Transform::identity(),
+        mask.as_ref(),
+    );
+}
+
+/// `None` for an empty clip, which hides everything inside it.
+fn clip_mask(canvas: &Pixmap, bounds: Bounds, world: Affine) -> Option<Mask> {
+    let path = rect_path(bounds, 0.0)?;
+    let mut mask = Mask::new(canvas.width(), canvas.height())?;
+    mask.fill_path(&path, FillRule::Winding, true, skia_transform(world));
+    Some(mask)
 }
 
 fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
@@ -429,5 +465,42 @@ mod tests {
         // Halfway out along each axis is equally far through the gradient.
         assert_near(pixel(&canvas, 150, 50), [127, 127, 127, 255]);
         assert_near(pixel(&canvas, 100, 75), [127, 127, 127, 255]);
+    }
+
+    #[test]
+    fn group_opacity_applies_once_to_the_composited_children() {
+        let canvas = render_json(
+            r##"{ "version": 1, "id": "f", "width": 30, "height": 10, "children": [
+                { "id": "group", "type": "group", "opacity": 0.5, "children": [
+                    { "id": "a", "type": "rect", "width": 20, "height": 10,
+                      "fill": { "color": "#FF0000" } },
+                    { "id": "b", "type": "rect", "x": 10, "width": 20, "height": 10,
+                      "fill": { "color": "#FF0000" } } ] } ] }"##,
+            "{}",
+        );
+
+        // Per-child opacity would make the overlap at x=15 denser than x=5.
+        assert_eq!(pixel(&canvas, 15, 5), pixel(&canvas, 5, 5));
+        assert_near(pixel(&canvas, 15, 5), [255, 0, 0, 127]);
+    }
+
+    #[test]
+    fn rotated_children_are_clipped_by_groups_and_the_frame() {
+        let canvas = render_json(
+            r##"{ "version": 1, "id": "f", "width": 100, "height": 100, "children": [
+                { "id": "diamond", "type": "group", "x": 50, "y": 50, "width": 40, "height": 40,
+                  "anchor": [0.5, 0.5], "rotation": 45, "clip": true, "children": [
+                    { "id": "flood", "type": "rect", "x": -100, "y": -100,
+                      "width": 300, "height": 300, "fill": { "color": "#00FF00" } } ] },
+                { "id": "overflowing", "type": "rect", "x": 100, "y": 0, "width": 60, "height": 60,
+                  "anchor": [0.5, 0.5], "rotation": 45, "fill": { "color": "#0000FF" } } ] }"##,
+            "{}",
+        );
+
+        assert_eq!((canvas.width(), canvas.height()), (100, 100));
+        assert_near(pixel(&canvas, 50, 25), [0, 255, 0, 255]);
+        // Inside the group's unrotated box, but outside the rotated clip.
+        assert_eq!(pixel(&canvas, 33, 33)[3], 0);
+        assert_near(pixel(&canvas, 99, 1), [0, 0, 255, 255]);
     }
 }
