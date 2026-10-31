@@ -5,15 +5,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tiny_skia::{
-    Color as SkiaColor, FillRule, LineCap as SkiaLineCap, LineJoin as SkiaLineJoin,
-    Paint as SkiaPaint, PathBuilder, Pixmap, Rect, Shader, Stroke as SkiaStroke, StrokeDash,
-    Transform,
+    Color as SkiaColor, FillRule, GradientStop, LineCap as SkiaLineCap, LineJoin as SkiaLineJoin,
+    LinearGradient, Paint as SkiaPaint, PathBuilder, Pixmap, Point, RadialGradient, Rect, Shader,
+    SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
 };
 
 use crate::diagnostics::Diagnostic;
 use crate::document::{LineCap, LineJoin};
 use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
-use crate::tokens::{Color, Paint};
+use crate::tokens::{Color, ColorStop, Paint};
 
 const MAX_OUTPUT_SIDE: f64 = 16384.0;
 const MAX_OUTPUT_PIXELS: f64 = 100_000_000.0;
@@ -256,11 +256,61 @@ fn fill_path(
 }
 
 /// `None` when the paint cannot produce color for this box, such as a gradient on a zero-size one.
-fn shader(paint: &Paint, _bounds: Bounds) -> Option<Shader<'static>> {
+fn shader(paint: &Paint, bounds: Bounds) -> Option<Shader<'static>> {
+    if !matches!(paint, Paint::Solid { .. }) && (bounds.width <= 0.0 || bounds.height <= 0.0) {
+        return None;
+    }
     match paint {
         Paint::Solid { color } => Some(Shader::SolidColor(skia_color(*color))),
-        Paint::LinearGradient { .. } | Paint::RadialGradient { .. } => None,
+        Paint::LinearGradient { angle, stops } => {
+            // CSS gradient length: stops 0 and 1 land exactly on the box's far corners.
+            let (sine, cosine) = angle.to_radians().sin_cos();
+            let half_length = (bounds.width * sine.abs() + bounds.height * cosine.abs()) / 2.0;
+            let (center_x, center_y) = (
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            let (offset_x, offset_y) = (sine * half_length, -cosine * half_length);
+            LinearGradient::new(
+                Point::from_xy((center_x - offset_x) as f32, (center_y - offset_y) as f32),
+                Point::from_xy((center_x + offset_x) as f32, (center_y + offset_y) as f32),
+                skia_stops(stops),
+                SpreadMode::Pad,
+                Transform::identity(),
+            )
+        }
+        Paint::RadialGradient {
+            center,
+            radius,
+            stops,
+        } => {
+            // A unit circle stretched per axis, so center and radius share one normalization.
+            let unit_circle_to_box = Transform::from_scale(
+                (radius * bounds.width) as f32,
+                (radius * bounds.height) as f32,
+            )
+            .post_translate(
+                (bounds.x + center[0] * bounds.width) as f32,
+                (bounds.y + center[1] * bounds.height) as f32,
+            );
+            RadialGradient::new(
+                Point::zero(),
+                0.0,
+                Point::zero(),
+                1.0,
+                skia_stops(stops),
+                SpreadMode::Pad,
+                unit_circle_to_box,
+            )
+        }
     }
+}
+
+fn skia_stops(stops: &[ColorStop]) -> Vec<GradientStop> {
+    stops
+        .iter()
+        .map(|stop| GradientStop::new(stop.offset as f32, skia_color(stop.color)))
+        .collect()
 }
 
 fn stroke_path(canvas: &mut Pixmap, path: &tiny_skia::Path, stroke: &Stroke, world: Affine) {
@@ -298,4 +348,86 @@ fn stroke_path(canvas: &mut Pixmap, path: &tiny_skia::Path, stroke: &Stroke, wor
         ..SkiaPaint::default()
     };
     canvas.stroke_path(path, &paint, &skia_stroke, skia_transform(world), None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::parse_frame;
+    use crate::scene::build;
+    use crate::tokens::Tokens;
+
+    fn render_json(frame_json: &str, tokens_json: &str) -> Pixmap {
+        let tokens = Tokens::parse(tokens_json).unwrap();
+        let scene = build(&parse_frame(frame_json).unwrap(), &tokens).unwrap();
+        render(&scene, 1.0).unwrap()
+    }
+
+    /// Straight (not premultiplied) RGBA at a pixel.
+    fn pixel(canvas: &Pixmap, x: u32, y: u32) -> [u8; 4] {
+        let color = canvas.pixel(x, y).unwrap().demultiply();
+        [color.red(), color.green(), color.blue(), color.alpha()]
+    }
+
+    fn assert_near(actual: [u8; 4], expected: [u8; 4]) {
+        let is_close = actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 4);
+        assert!(is_close, "{actual:?} is not close to {expected:?}");
+    }
+
+    #[test]
+    fn linear_gradient_interpolates_three_stops_with_tokens_and_transparency() {
+        let canvas = render_json(
+            r##"{ "version": 1, "id": "f", "width": 200, "height": 10, "children": [
+                { "id": "g", "type": "rect", "width": 200, "height": 10, "fill": {
+                    "type": "linear-gradient", "angle": 90, "stops": [
+                        { "offset": 0, "color": "$colors.red" },
+                        { "offset": 0.5, "color": "#00FF00" },
+                        { "offset": 1, "color": "#0000FF00" } ] } } ] }"##,
+            r##"{ "colors": { "red": "#FF0000" } }"##,
+        );
+
+        assert_near(pixel(&canvas, 0, 5), [255, 0, 0, 255]);
+        assert_near(pixel(&canvas, 50, 5), [127, 127, 0, 255]);
+        assert_near(pixel(&canvas, 100, 5), [0, 255, 0, 255]);
+        // Halfway to a transparent stop: color and alpha interpolate independently, in sRGB.
+        assert_near(pixel(&canvas, 150, 5), [0, 127, 127, 127]);
+        assert!(canvas.pixel(199, 5).unwrap().alpha() < 4);
+    }
+
+    #[test]
+    fn gradient_angle_zero_points_up_and_stays_in_object_space_when_rotated() {
+        let canvas = render_json(
+            r##"{ "version": 1, "id": "f", "width": 100, "height": 100, "children": [
+                { "id": "g", "type": "rect", "width": 100, "height": 100, "rotation": 90,
+                  "anchor": [0.5, 0.5], "x": 50, "y": 50, "fill": {
+                    "type": "linear-gradient", "angle": 0, "stops": [
+                        { "offset": 0, "color": "#000000" },
+                        { "offset": 1, "color": "#FFFFFF" } ] } } ] }"##,
+            "{}",
+        );
+
+        // Up in object space is right on screen after a clockwise quarter turn.
+        assert_near(pixel(&canvas, 98, 50), [253, 253, 253, 255]);
+        assert_near(pixel(&canvas, 1, 50), [3, 3, 3, 255]);
+    }
+
+    #[test]
+    fn radial_radius_is_normalized_per_axis() {
+        let canvas = render_json(
+            r##"{ "version": 1, "id": "f", "width": 200, "height": 100, "children": [
+                { "id": "g", "type": "rect", "width": 200, "height": 100, "fill": {
+                    "type": "radial-gradient", "center": [0.5, 0.5], "radius": 0.5, "stops": [
+                        { "offset": 0, "color": "#000000" },
+                        { "offset": 1, "color": "#FFFFFF" } ] } } ] }"##,
+            "{}",
+        );
+
+        assert_near(pixel(&canvas, 100, 50), [0, 0, 0, 255]);
+        // Halfway out along each axis is equally far through the gradient.
+        assert_near(pixel(&canvas, 150, 50), [127, 127, 127, 255]);
+        assert_near(pixel(&canvas, 100, 75), [127, 127, 127, 255]);
+    }
 }

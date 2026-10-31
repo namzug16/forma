@@ -119,7 +119,7 @@ impl Tokens {
         Self::parse(&text).with_context(|| format!("invalid tokens {}", path.display()))
     }
 
-    fn parse(text: &str) -> Result<Self> {
+    pub fn parse(text: &str) -> Result<Self> {
         let root: Value = serde_json::from_str(text)?;
         anyhow::ensure!(root.is_object(), "tokens must be a JSON object");
         Ok(Self { root })
