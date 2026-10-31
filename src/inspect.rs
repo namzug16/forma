@@ -153,8 +153,8 @@ pub fn print_outline(report: &Value) {
     println!(
         "{}  {}×{}",
         report["frame"].as_str().unwrap_or_default(),
-        report["width"],
-        report["height"]
+        report["width"].as_f64().unwrap_or_default(),
+        report["height"].as_f64().unwrap_or_default(),
     );
     print_layers(items_of(&report["layers"]), 1);
     for warning in items_of(&report["warnings"]) {
