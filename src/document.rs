@@ -315,16 +315,16 @@ pub fn parse_frame(text: &str) -> Result<Frame, Failure> {
             .push(Diagnostic::new("missing_property", "missing field `children`").at("children"));
     }
     let header = parser.deserialize::<FrameHeader>(root, "", None);
-    if let Some(header) = &header {
-        if header.version != SUPPORTED_DOCUMENT_VERSION {
-            parser.diagnostics.push(
-                Diagnostic::new(
-                    "unsupported_version",
-                    format!("document version {} is not supported", header.version),
-                )
-                .at("version"),
-            );
-        }
+    if let Some(header) = &header
+        && header.version != SUPPORTED_DOCUMENT_VERSION
+    {
+        parser.diagnostics.push(
+            Diagnostic::new(
+                "unsupported_version",
+                format!("document version {} is not supported", header.version),
+            )
+            .at("version"),
+        );
     }
     let children = parser.parse_children(children, "children", 1);
 
@@ -430,17 +430,17 @@ impl Parser {
             .into_iter()
             .partition(|(key, _)| COMMON_PROPERTIES.contains(&key.as_str()));
         let common = self.deserialize::<CommonProperties>(common_properties, path, layer);
-        if let Some(common) = &common {
-            if !self.seen_ids.insert(common.id.clone()) {
-                self.push(
-                    Diagnostic::new(
-                        "duplicate_node_id",
-                        format!("node id \"{}\" is already used in this frame", common.id),
-                    )
-                    .at(format!("{path}.id")),
-                    layer,
-                );
-            }
+        if let Some(common) = &common
+            && !self.seen_ids.insert(common.id.clone())
+        {
+            self.push(
+                Diagnostic::new(
+                    "duplicate_node_id",
+                    format!("node id \"{}\" is already used in this frame", common.id),
+                )
+                .at(format!("{path}.id")),
+                layer,
+            );
         }
 
         let kind = match node_type.as_ref().and_then(Value::as_str) {

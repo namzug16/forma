@@ -273,7 +273,7 @@ fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {
     let premultiply =
         |channel: u8, alpha: u8| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8;
     let mut premultiplied = image.rgba.clone();
-    for pixel in premultiplied.chunks_exact_mut(4) {
+    for pixel in premultiplied.as_chunks_mut::<4>().0 {
         let alpha = pixel[3];
         pixel[0] = premultiply(pixel[0], alpha);
         pixel[1] = premultiply(pixel[1], alpha);
@@ -458,7 +458,7 @@ fn stroke_path(canvas: &mut Pixmap, path: &tiny_skia::Path, stroke: &Stroke, wor
     color.apply_opacity(stroke.opacity as f32);
     let dash_lengths = stroke.dash.iter().map(|length| *length as f32);
     // An odd list repeats to alternate dashes and gaps, as SVG does.
-    let dash_lengths: Vec<f32> = if stroke.dash.len() % 2 == 0 {
+    let dash_lengths: Vec<f32> = if stroke.dash.len().is_multiple_of(2) {
         dash_lengths.collect()
     } else {
         dash_lengths.clone().chain(dash_lengths).collect()
