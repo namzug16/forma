@@ -3,6 +3,9 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde_json::json;
+
+use crate::project;
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -21,13 +24,41 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Create a forma/ project
+    Init {
+        /// Directory to initialize (default: current directory)
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
     /// Print the forma version
     Version,
 }
 
 pub fn run(arguments: Cli) -> Result<ExitCode> {
     match arguments.command {
+        Some(Command::Init { path }) => run_init(path, arguments.json)?,
         Some(Command::Version) | None => println!("forma {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_init(path: Option<PathBuf>, emit_json: bool) -> Result<()> {
+    let root = path.unwrap_or_else(|| PathBuf::from("."));
+    let report = project::initialize(&root)?;
+    if emit_json {
+        let result = json!({
+            "success": true,
+            "created": report.created,
+            "alreadyPresent": report.already_present,
+        });
+        println!("{result:#}");
+        return Ok(());
+    }
+    for path in &report.created {
+        println!("created  {}", path.display());
+    }
+    for path in &report.already_present {
+        println!("exists   {}", path.display());
+    }
+    Ok(())
 }
