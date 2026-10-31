@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
-use crate::project;
+use crate::{document, project};
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -30,6 +30,8 @@ pub enum Command {
         #[arg(long)]
         path: Option<PathBuf>,
     },
+    /// Print the document JSON Schema
+    Schema,
     /// Print the forma version
     Version,
 }
@@ -37,6 +39,7 @@ pub enum Command {
 pub fn run(arguments: Cli) -> Result<ExitCode> {
     match arguments.command {
         Some(Command::Init { path }) => run_init(path, arguments.json)?,
+        Some(Command::Schema) => println!("{:#}", document::json_schema()),
         Some(Command::Version) | None => println!("forma {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(ExitCode::SUCCESS)

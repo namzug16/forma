@@ -1,5 +1,6 @@
 mod cli;
 mod diagnostics;
+mod document;
 mod project;
 
 use std::process::ExitCode;
