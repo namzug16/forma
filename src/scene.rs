@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
+use usvg::Tree;
 
 use crate::assets::{Assets, DecodedImage};
 use crate::diagnostics::{Diagnostic, Failure};
@@ -165,6 +166,10 @@ pub enum SceneKind {
         image: DecodedImage,
         source: PathBuf,
         fit: ImageFit,
+    },
+    Svg {
+        tree: Tree,
+        source: PathBuf,
     },
     Group {
         children: Vec<SceneNode>,
@@ -435,7 +440,15 @@ impl SceneBuilder<'_> {
                 };
                 (kind, Bounds::sized(width?, height?), true)
             }
-            NodeKind::Text(_) | NodeKind::Svg(_) => {
+            NodeKind::Svg(svg) => {
+                let width = self.dimension(&svg.width, &format!("{path}.width"), layer);
+                let height = self.dimension(&svg.height, &format!("{path}.height"), layer);
+                let loaded = self.assets.load_svg(&svg.src, &format!("{path}.src"));
+                let (source, tree) = self.record(loaded, Some(layer))?;
+                let kind = SceneKind::Svg { tree, source };
+                (kind, Bounds::sized(width?, height?), true)
+            }
+            NodeKind::Text(_) => {
                 self.diagnostics.push(
                     Diagnostic::new("unsupported_feature", "this node type is not implemented")
                         .at(path)

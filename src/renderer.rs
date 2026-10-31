@@ -11,6 +11,8 @@ use tiny_skia::{
     StrokeDash, Transform,
 };
 
+use usvg::Tree;
+
 use crate::assets::DecodedImage;
 use crate::diagnostics::Diagnostic;
 use crate::document::{ImageFit, LineCap, LineJoin};
@@ -181,6 +183,7 @@ fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
             }
         }
         SceneKind::Image { image, fit, .. } => draw_image(canvas, image, *fit, bounds, world),
+        SceneKind::Svg { tree, .. } => draw_svg(canvas, tree, bounds, world),
         SceneKind::Group { children, .. } => draw_nodes(children, canvas, world),
     }
 }
@@ -244,6 +247,21 @@ fn draw_image(
         skia_transform(world),
         None,
     );
+}
+
+/// Fits the SVG inside the box without distorting it, centered.
+fn draw_svg(canvas: &mut Pixmap, tree: &Tree, bounds: Bounds, world: Affine) {
+    let (svg_width, svg_height) = (
+        f64::from(tree.size().width()),
+        f64::from(tree.size().height()),
+    );
+    let scale = (bounds.width / svg_width).min(bounds.height / svg_height);
+    let svg_to_box = Affine::scale(scale, scale).then(Affine::translate(
+        bounds.x + (bounds.width - svg_width * scale) / 2.0,
+        bounds.y + (bounds.height - svg_height * scale) / 2.0,
+    ));
+    let transform = skia_transform(svg_to_box.then(world));
+    resvg::render(tree, transform, &mut canvas.as_mut());
 }
 
 fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {

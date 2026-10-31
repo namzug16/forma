@@ -5,11 +5,14 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use image::{ImageReader, Limits};
+use usvg::roxmltree::{Document, ParsingOptions};
+use usvg::{ImageHrefResolver, Options, Tree};
 
 use crate::diagnostics::Diagnostic;
 
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16384;
+const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 
 /// Decoded pixels in straight (not premultiplied) RGBA.
 #[derive(Debug)]
@@ -84,6 +87,43 @@ impl Assets {
             .map_err(|message| Diagnostic::new("invalid_image", message).at(path))?;
         Ok((resolved, image))
     }
+
+    pub fn load_svg(&self, relative_path: &str, path: &str) -> Result<(PathBuf, Tree), Diagnostic> {
+        let (resolved, bytes) = self.read(relative_path, path)?;
+        let tree =
+            parse_svg(&bytes).map_err(|(code, message)| Diagnostic::new(code, message).at(path))?;
+        Ok((resolved, tree))
+    }
+}
+
+/// Scripts are never executed by usvg. External references are refused here; only self-contained
+/// `data:` images load. Text is rejected because SVG font selection would bypass frame font rules.
+fn parse_svg(bytes: &[u8]) -> Result<Tree, (&'static str, String)> {
+    let invalid = |error: &dyn std::fmt::Display| ("invalid_svg", error.to_string());
+    let text = std::str::from_utf8(bytes).map_err(|error| invalid(&error))?;
+    let parsing_options = ParsingOptions {
+        allow_dtd: true,
+        ..ParsingOptions::default()
+    };
+    let document =
+        Document::parse_with_options(text, parsing_options).map_err(|error| invalid(&error))?;
+    if document
+        .descendants()
+        .any(|node| node.has_tag_name((SVG_NAMESPACE, "text")))
+    {
+        return Err((
+            "unsupported_svg_text",
+            "SVG <text> is not supported; convert it to paths or use a text node".to_owned(),
+        ));
+    }
+    let options = Options {
+        image_href_resolver: ImageHrefResolver {
+            resolve_string: Box::new(|_, _| None),
+            ..ImageHrefResolver::default()
+        },
+        ..Options::default()
+    };
+    Tree::from_data(bytes, &options).map_err(|error| invalid(&error))
 }
 
 fn decode_image(bytes: &[u8], source: &Path) -> Result<DecodedImage, String> {
@@ -132,5 +172,28 @@ mod tests {
             let error = assets.read(escaping_path, "src").unwrap_err();
             assert_eq!(error.code, "asset_outside_project", "{escaping_path}");
         }
+    }
+
+    #[test]
+    fn svg_cannot_load_files_or_bypass_font_rules() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = root.path().join("secret.png");
+        let mut pixmap = tiny_skia::Pixmap::new(1, 1).unwrap();
+        pixmap.fill(tiny_skia::Color::WHITE);
+        pixmap.save_png(&secret).unwrap();
+        let open_tag = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">"#;
+
+        let linking = format!(r#"{open_tag}<image href="{}"/></svg>"#, secret.display());
+        let tree = parse_svg(linking.as_bytes()).unwrap();
+        assert!(!tree.root().has_children());
+
+        let drawing = format!(r#"{open_tag}<rect width="1" height="1"/></svg>"#);
+        assert!(parse_svg(drawing.as_bytes()).unwrap().root().has_children());
+
+        let with_text = format!("{open_tag}<text>hi</text></svg>");
+        assert_eq!(
+            parse_svg(with_text.as_bytes()).unwrap_err().0,
+            "unsupported_svg_text"
+        );
     }
 }
