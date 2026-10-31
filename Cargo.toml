@@ -22,3 +22,6 @@ strip = true
 # Decoding and rasterizing are unusably slow unoptimized.
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+tempfile = "3.27.0"

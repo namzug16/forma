@@ -129,6 +129,10 @@ impl Project {
         .into())
     }
 
+    pub fn frames_directory(&self) -> PathBuf {
+        self.directory.join(&self.config.frames)
+    }
+
     pub fn tokens(&self) -> Result<Tokens> {
         Tokens::load(&self.directory.join(&self.config.tokens))
     }

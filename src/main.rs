@@ -1,6 +1,7 @@
 mod cli;
 mod diagnostics;
 mod document;
+mod frames;
 mod project;
 mod scene;
 mod tokens;
