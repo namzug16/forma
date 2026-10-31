@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::diagnostics::{Diagnostic, Failure};
+use crate::tokens::Tokens;
 
 const PROJECT_DIRECTORY: &str = "forma";
 const CONFIG_FILE: &str = "config.json";
@@ -126,6 +127,10 @@ impl Project {
             ),
         ))
         .into())
+    }
+
+    pub fn tokens(&self) -> Result<Tokens> {
+        Tokens::load(&self.directory.join(&self.config.tokens))
     }
 
     fn load(root: &Path) -> Result<Self> {

@@ -2,6 +2,7 @@ mod cli;
 mod diagnostics;
 mod document;
 mod project;
+mod tokens;
 
 use std::process::ExitCode;
 
