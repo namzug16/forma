@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::frames::FrameFile;
+use crate::scene::Resources;
 use crate::tokens::Tokens;
 
 const PROJECT_DIRECTORY: &str = "forma";
@@ -161,6 +163,13 @@ impl Project {
 
     pub fn tokens(&self) -> Result<Tokens> {
         Tokens::load(&self.resolve(&self.config.tokens))
+    }
+
+    pub fn resources(&self) -> Result<Resources> {
+        Ok(Resources {
+            tokens: self.tokens()?,
+            assets: Assets::new(self.resolve(&self.config.assets)),
+        })
     }
 
     fn load(root: &Path) -> Result<Self> {

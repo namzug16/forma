@@ -1,10 +1,13 @@
 //! The resolved, renderer-independent scene: tokens are values and geometry is computed.
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 
+use crate::assets::{Assets, DecodedImage};
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document::{
-    self, CommonProperties, Frame, LineCap, LineJoin, Node, NodeKind, NumberValue,
+    self, CommonProperties, Frame, ImageFit, LineCap, LineJoin, Node, NodeKind, NumberValue,
 };
 use crate::tokens::{Color, Paint, Tokens};
 
@@ -158,6 +161,11 @@ pub enum SceneKind {
     Line {
         stroke: Stroke,
     },
+    Image {
+        image: DecodedImage,
+        source: PathBuf,
+        fit: ImageFit,
+    },
     Group {
         children: Vec<SceneNode>,
         clip: bool,
@@ -186,10 +194,19 @@ pub struct Scene {
     pub warnings: Vec<Diagnostic>,
 }
 
+/// Everything outside a frame document that resolving it can depend on.
+#[derive(Debug)]
+pub struct Resources {
+    pub tokens: Tokens,
+    pub assets: Assets,
+}
+
 /// Resolves a parsed frame, reporting every problem rather than the first.
-pub fn build(frame: &Frame, tokens: &Tokens) -> Result<Scene, Failure> {
+pub fn build(frame: &Frame, resources: &Resources) -> Result<Scene, Failure> {
+    let tokens = &resources.tokens;
     let mut builder = SceneBuilder {
         tokens,
+        assets: &resources.assets,
         diagnostics: Vec::new(),
         warnings: Vec::new(),
     };
@@ -216,6 +233,7 @@ pub fn build(frame: &Frame, tokens: &Tokens) -> Result<Scene, Failure> {
 
 struct SceneBuilder<'a> {
     tokens: &'a Tokens,
+    assets: &'a Assets,
     diagnostics: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
 }
@@ -405,7 +423,19 @@ impl SceneBuilder<'_> {
                     explicit_size.is_some(),
                 )
             }
-            NodeKind::Text(_) | NodeKind::Image(_) | NodeKind::Svg(_) => {
+            NodeKind::Image(image) => {
+                let width = self.dimension(&image.width, &format!("{path}.width"), layer);
+                let height = self.dimension(&image.height, &format!("{path}.height"), layer);
+                let loaded = self.assets.load_image(&image.src, &format!("{path}.src"));
+                let (source, decoded) = self.record(loaded, Some(layer))?;
+                let kind = SceneKind::Image {
+                    image: decoded,
+                    source,
+                    fit: image.fit.unwrap_or_default(),
+                };
+                (kind, Bounds::sized(width?, height?), true)
+            }
+            NodeKind::Text(_) | NodeKind::Svg(_) => {
                 self.diagnostics.push(
                     Diagnostic::new("unsupported_feature", "this node type is not implemented")
                         .at(path)

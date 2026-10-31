@@ -5,13 +5,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tiny_skia::{
-    Color as SkiaColor, FillRule, GradientStop, LineCap as SkiaLineCap, LineJoin as SkiaLineJoin,
-    LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap, PixmapPaint, Point,
-    RadialGradient, Rect, Shader, SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
+    Color as SkiaColor, FillRule, FilterQuality, GradientStop, IntSize, LineCap as SkiaLineCap,
+    LineJoin as SkiaLineJoin, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pattern,
+    Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode, Stroke as SkiaStroke,
+    StrokeDash, Transform,
 };
 
+use crate::assets::DecodedImage;
 use crate::diagnostics::Diagnostic;
-use crate::document::{LineCap, LineJoin};
+use crate::document::{ImageFit, LineCap, LineJoin};
 use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
 use crate::tokens::{Color, ColorStop, Paint};
 
@@ -178,8 +180,83 @@ fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
                 stroke_path(canvas, &path, stroke, world);
             }
         }
+        SceneKind::Image { image, fit, .. } => draw_image(canvas, image, *fit, bounds, world),
         SceneKind::Group { children, .. } => draw_nodes(children, canvas, world),
     }
+}
+
+fn draw_image(
+    canvas: &mut Pixmap,
+    image: &DecodedImage,
+    fit: ImageFit,
+    bounds: Bounds,
+    world: Affine,
+) {
+    let Some(pixels) = premultiplied_pixmap(image) else {
+        return;
+    };
+    let (image_width, image_height) = (f64::from(image.width), f64::from(image.height));
+    let (scale_x, scale_y) = (bounds.width / image_width, bounds.height / image_height);
+    let (scale_x, scale_y) = match fit {
+        ImageFit::Fill => (scale_x, scale_y),
+        ImageFit::Cover => (scale_x.max(scale_y), scale_x.max(scale_y)),
+        ImageFit::Contain => (scale_x.min(scale_y), scale_x.min(scale_y)),
+    };
+    let (drawn_width, drawn_height) = (image_width * scale_x, image_height * scale_y);
+    let (left, top) = (
+        bounds.x + (bounds.width - drawn_width) / 2.0,
+        bounds.y + (bounds.height - drawn_height) / 2.0,
+    );
+    // Cover overflows the box and contain letterboxes it; only their overlap is painted.
+    let visible = Bounds {
+        x: left.max(bounds.x),
+        y: top.max(bounds.y),
+        width: drawn_width.min(bounds.width),
+        height: drawn_height.min(bounds.height),
+    };
+    let Some(path) = rect_path(visible, 0.0) else {
+        return;
+    };
+    let image_to_box = Transform::from_row(
+        scale_x as f32,
+        0.0,
+        0.0,
+        scale_y as f32,
+        left as f32,
+        top as f32,
+    );
+    let paint = SkiaPaint {
+        // shortcut: bicubic undersamples large reductions, add mipmaps if downscaled photos alias
+        shader: Pattern::new(
+            pixels.as_ref(),
+            SpreadMode::Pad,
+            FilterQuality::Bicubic,
+            1.0,
+            image_to_box,
+        ),
+        anti_alias: true,
+        ..SkiaPaint::default()
+    };
+    canvas.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        skia_transform(world),
+        None,
+    );
+}
+
+fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {
+    let premultiply =
+        |channel: u8, alpha: u8| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8;
+    let mut premultiplied = image.rgba.clone();
+    for pixel in premultiplied.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        pixel[0] = premultiply(pixel[0], alpha);
+        pixel[1] = premultiply(pixel[1], alpha);
+        pixel[2] = premultiply(pixel[2], alpha);
+    }
+    Pixmap::from_vec(premultiplied, IntSize::from_wh(image.width, image.height)?)
 }
 
 fn skia_rect(bounds: Bounds) -> Option<Rect> {
@@ -389,13 +466,17 @@ fn stroke_path(canvas: &mut Pixmap, path: &tiny_skia::Path, stroke: &Stroke, wor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::Assets;
     use crate::document::parse_frame;
-    use crate::scene::build;
+    use crate::scene::{Resources, build};
     use crate::tokens::Tokens;
 
     fn render_json(frame_json: &str, tokens_json: &str) -> Pixmap {
-        let tokens = Tokens::parse(tokens_json).unwrap();
-        let scene = build(&parse_frame(frame_json).unwrap(), &tokens).unwrap();
+        let resources = Resources {
+            tokens: Tokens::parse(tokens_json).unwrap(),
+            assets: Assets::new("/no/assets".into()),
+        };
+        let scene = build(&parse_frame(frame_json).unwrap(), &resources).unwrap();
         render(&scene, 1.0).unwrap()
     }
 

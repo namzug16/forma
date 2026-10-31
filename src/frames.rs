@@ -8,8 +8,7 @@ use anyhow::{Context, Result};
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::project::Project;
-use crate::scene::{self, Scene};
-use crate::tokens::Tokens;
+use crate::scene::{self, Resources, Scene};
 
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -135,7 +134,7 @@ fn not_found(reference: &str) -> anyhow::Error {
 }
 
 /// Reads, parses and fully resolves a frame without touching any source file.
-pub fn load_scene(file: &FrameFile, tokens: &Tokens) -> Result<Scene, Failure> {
+pub fn load_scene(file: &FrameFile, resources: &Resources) -> Result<Scene, Failure> {
     let read_failure =
         |message: String| Failure::from(Diagnostic::new("frame_unreadable", message));
     let size = fs::metadata(&file.path)
@@ -150,5 +149,5 @@ pub fn load_scene(file: &FrameFile, tokens: &Tokens) -> Result<Scene, Failure> {
     let text = fs::read_to_string(&file.path)
         .map_err(|error| read_failure(format!("{}: {error}", file.path.display())))?;
     let frame = document::parse_frame(&text)?;
-    scene::build(&frame, tokens)
+    scene::build(&frame, resources)
 }

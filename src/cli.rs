@@ -13,7 +13,7 @@ use crate::document;
 use crate::frames::{self, FrameFile};
 use crate::project::{self, Project};
 use crate::renderer;
-use crate::tokens::Tokens;
+use crate::scene::Resources;
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -117,12 +117,12 @@ fn selected_frames(project: &Project, frame: Option<&str>) -> Result<Vec<FrameFi
 
 fn run_list(arguments: &Cli) -> Result<()> {
     let project = open_project(arguments)?;
-    let tokens = project.tokens()?;
+    let resources = project.resources()?;
     let rows = frames::list(&project)?
         .iter()
         .map(|file| {
             let name = file.display_name();
-            match frames::load_scene(file, &tokens) {
+            match frames::load_scene(file, &resources) {
                 Ok(scene) => (name, Some((scene.width, scene.height)), Vec::new()),
                 Err(failure) => (name, None, failure.0),
             }
@@ -178,14 +178,14 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
         ))
         .into());
     }
-    let tokens = project.tokens()?;
+    let resources = project.resources()?;
     let files = selected_frames(&project, frame)?;
 
     if frame.is_some() {
         let [file] = files.as_slice() else {
             unreachable!("one reference selects one frame");
         };
-        let result = render_frame(&project, &tokens, file, options)?;
+        let result = render_frame(&project, &resources, file, options)?;
         print_render_result(&result, arguments.json);
         return Ok(ExitCode::SUCCESS);
     }
@@ -193,7 +193,7 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
     let mut all_succeeded = true;
     let mut results = Vec::new();
     for file in &files {
-        match render_frame(&project, &tokens, file, options) {
+        match render_frame(&project, &resources, file, options) {
             Ok(result) => {
                 print_render_result(&result, false);
                 results.push(json!(result));
@@ -239,11 +239,11 @@ struct RenderResult {
 
 fn render_frame(
     project: &Project,
-    tokens: &Tokens,
+    resources: &Resources,
     file: &FrameFile,
     options: &RenderOptions,
 ) -> Result<RenderResult> {
-    let scene = frames::load_scene(file, tokens)?;
+    let scene = frames::load_scene(file, resources)?;
     let scale = options.scale.unwrap_or(project.config.render.scale);
     let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;
     let output = match options.output {
@@ -305,12 +305,12 @@ fn print_render_result(result: &RenderResult, emit_json: bool) {
 
 fn run_validate(arguments: &Cli, frame: Option<&str>) -> Result<ExitCode> {
     let project = open_project(arguments)?;
-    let tokens = project.tokens()?;
+    let resources = project.resources()?;
     let mut all_valid = true;
     let mut results = Vec::new();
     for file in selected_frames(&project, frame)? {
         let name = file.display_name();
-        let (errors, warnings) = match frames::load_scene(&file, &tokens) {
+        let (errors, warnings) = match frames::load_scene(&file, &resources) {
             Ok(scene) => (Vec::new(), scene.warnings),
             Err(failure) => (failure.0, Vec::new()),
         };

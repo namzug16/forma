@@ -1,3 +1,4 @@
+mod assets;
 mod cli;
 mod diagnostics;
 mod document;
