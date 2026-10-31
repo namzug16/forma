@@ -8,6 +8,7 @@ use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::frames::FrameFile;
 use crate::scene::Resources;
+use crate::text::FontLibrary;
 use crate::tokens::Tokens;
 
 const PROJECT_DIRECTORY: &str = "forma";
@@ -169,6 +170,7 @@ impl Project {
         Ok(Resources {
             tokens: self.tokens()?,
             assets: Assets::new(self.resolve(&self.config.assets)),
+            fonts: FontLibrary::default(),
         })
     }
 

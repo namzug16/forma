@@ -6,6 +6,7 @@ mod frames;
 mod project;
 mod renderer;
 mod scene;
+mod text;
 mod tokens;
 
 use std::process::ExitCode;

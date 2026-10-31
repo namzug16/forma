@@ -182,6 +182,11 @@ fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
                 stroke_path(canvas, &path, stroke, world);
             }
         }
+        SceneKind::Text { outlines, fill, .. } => {
+            if let Some(outlines) = outlines {
+                fill_path(canvas, outlines, fill, bounds, world);
+            }
+        }
         SceneKind::Image { image, fit, .. } => draw_image(canvas, image, *fit, bounds, world),
         SceneKind::Svg { tree, .. } => draw_svg(canvas, tree, bounds, world),
         SceneKind::Group { children, .. } => draw_nodes(children, canvas, world),
@@ -487,12 +492,14 @@ mod tests {
     use crate::assets::Assets;
     use crate::document::parse_frame;
     use crate::scene::{Resources, build};
+    use crate::text::FontLibrary;
     use crate::tokens::Tokens;
 
     fn render_json(frame_json: &str, tokens_json: &str) -> Pixmap {
         let resources = Resources {
             tokens: Tokens::parse(tokens_json).unwrap(),
             assets: Assets::new("/no/assets".into()),
+            fonts: FontLibrary::default(),
         };
         let scene = build(&parse_frame(frame_json).unwrap(), &resources).unwrap();
         render(&scene, 1.0).unwrap()

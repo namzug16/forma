@@ -10,7 +10,8 @@ use crate::diagnostics::{Diagnostic, Failure};
 use crate::document::{
     self, CommonProperties, Frame, ImageFit, LineCap, LineJoin, Node, NodeKind, NumberValue,
 };
-use crate::tokens::{Color, Paint, Tokens};
+use crate::text::{FontLibrary, TextRequest};
+use crate::tokens::{Color, Paint, ResolvedFont, Tokens};
 
 /// Maps `(x, y)` to `(a·x + c·y + e, b·x + d·y + f)`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -162,6 +163,13 @@ pub enum SceneKind {
     Line {
         stroke: Stroke,
     },
+    Text {
+        outlines: Option<tiny_skia::Path>,
+        fill: Paint,
+        font: ResolvedFont,
+        font_source: String,
+        line_count: usize,
+    },
     Image {
         image: DecodedImage,
         source: PathBuf,
@@ -204,6 +212,7 @@ pub struct Scene {
 pub struct Resources {
     pub tokens: Tokens,
     pub assets: Assets,
+    pub fonts: FontLibrary,
 }
 
 /// Resolves a parsed frame, reporting every problem rather than the first.
@@ -212,6 +221,7 @@ pub fn build(frame: &Frame, resources: &Resources) -> Result<Scene, Failure> {
     let mut builder = SceneBuilder {
         tokens,
         assets: &resources.assets,
+        fonts: &resources.fonts,
         diagnostics: Vec::new(),
         warnings: Vec::new(),
     };
@@ -239,6 +249,7 @@ pub fn build(frame: &Frame, resources: &Resources) -> Result<Scene, Failure> {
 struct SceneBuilder<'a> {
     tokens: &'a Tokens,
     assets: &'a Assets,
+    fonts: &'a FontLibrary,
     diagnostics: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
 }
@@ -448,13 +459,38 @@ impl SceneBuilder<'_> {
                 let kind = SceneKind::Svg { tree, source };
                 (kind, Bounds::sized(width?, height?), true)
             }
-            NodeKind::Text(_) => {
-                self.diagnostics.push(
-                    Diagnostic::new("unsupported_feature", "this node type is not implemented")
-                        .at(path)
-                        .on_layer(layer),
+            NodeKind::Text(text) => {
+                let wrap_width = match &text.width {
+                    Some(value) => Some(self.dimension(value, &format!("{path}.width"), layer)?),
+                    None => None,
+                };
+                let font_path = format!("{path}.font");
+                let font = self.record(self.tokens.font(&text.font, &font_path), Some(layer));
+                let fill = self.paint(Some(&text.fill), &format!("{path}.fill"), layer);
+                let font = font?;
+                let request = TextRequest {
+                    text: &text.text,
+                    font: &font,
+                    wrap_width,
+                    align: text.align.unwrap_or_default(),
+                    path: &font_path,
+                };
+                let layout = self.fonts.layout(&request, self.assets);
+                let layout = self.record(layout, Some(layer))?;
+                self.warnings.extend(
+                    layout
+                        .warnings
+                        .into_iter()
+                        .map(|warning| warning.on_layer(layer)),
                 );
-                return None;
+                let kind = SceneKind::Text {
+                    outlines: layout.outlines,
+                    fill: fill??,
+                    font,
+                    font_source: layout.font_source,
+                    line_count: layout.line_count,
+                };
+                (kind, Bounds::sized(layout.width, layout.height), true)
             }
         };
         self.finish_node(&node.common, kind, bounds, has_explicit_box, path)
