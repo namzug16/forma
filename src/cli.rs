@@ -1,14 +1,19 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use serde_json::json;
 
+use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::frames::{self, FrameFile};
 use crate::project::{self, Project};
+use crate::renderer;
+use crate::tokens::Tokens;
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -35,6 +40,24 @@ pub enum Command {
     },
     /// List frames (the default command)
     List,
+    /// Render frames to image files
+    Render {
+        /// Frame name, path relative to the frames directory, or explicit ./ path
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        frame: Option<String>,
+        /// Render every frame
+        #[arg(long)]
+        all: bool,
+        /// Destination file
+        #[arg(long, conflicts_with = "all")]
+        output: Option<PathBuf>,
+        /// Output format (only png in V1)
+        #[arg(long)]
+        format: Option<String>,
+        /// Multiplies raster dimensions, not logical coordinates
+        #[arg(long)]
+        scale: Option<f64>,
+    },
     /// Check frames without rendering
     Validate {
         /// Frame name, path relative to the frames directory, or explicit ./ path
@@ -58,6 +81,20 @@ pub fn run(arguments: Cli) -> Result<ExitCode> {
         Some(Command::Tokens) => run_tokens(&arguments)?,
         Some(Command::Schema) => println!("{:#}", document::json_schema()),
         Some(Command::List) | None => run_list(&arguments)?,
+        Some(Command::Render {
+            frame,
+            output,
+            format,
+            scale,
+            ..
+        }) => {
+            let options = RenderOptions {
+                output: output.as_deref(),
+                format: format.as_deref(),
+                scale: *scale,
+            };
+            return run_render(&arguments, frame.as_deref(), &options);
+        }
         Some(Command::Validate { frame, .. }) => {
             return run_validate(&arguments, frame.as_deref());
         }
@@ -109,7 +146,8 @@ fn run_list(arguments: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    println!("Forma — {} frames\n", rows.len());
+    let noun = if rows.len() == 1 { "frame" } else { "frames" };
+    println!("Forma — {} {noun}\n", rows.len());
     println!("{:<30} {:<12} STATUS", "FRAME", "SIZE");
     for (name, size, _) in &rows {
         let (size, status) = match size {
@@ -118,10 +156,151 @@ fn run_list(arguments: &Cli) -> Result<()> {
         };
         println!("{name:<30} {size:<12} {status}");
     }
-    if let Some((name, ..)) = rows.first() {
+    if let Some((name, ..)) = rows.iter().find(|(_, size, _)| size.is_some()) {
         println!("\nRender: forma render {name}");
     }
     Ok(())
+}
+
+struct RenderOptions<'a> {
+    output: Option<&'a Path>,
+    format: Option<&'a str>,
+    scale: Option<f64>,
+}
+
+fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> Result<ExitCode> {
+    let project = open_project(arguments)?;
+    let format = options.format.unwrap_or(&project.config.render.format);
+    if format != "png" {
+        return Err(Failure::from(Diagnostic::new(
+            "unsupported_format",
+            format!("format \"{format}\" is not supported; V1 renders png"),
+        ))
+        .into());
+    }
+    let tokens = project.tokens()?;
+    let files = selected_frames(&project, frame)?;
+
+    if frame.is_some() {
+        let [file] = files.as_slice() else {
+            unreachable!("one reference selects one frame");
+        };
+        let result = render_frame(&project, &tokens, file, options)?;
+        print_render_result(&result, arguments.json);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut all_succeeded = true;
+    let mut results = Vec::new();
+    for file in &files {
+        match render_frame(&project, &tokens, file, options) {
+            Ok(result) => {
+                print_render_result(&result, false);
+                results.push(json!(result));
+            }
+            Err(error) => {
+                all_succeeded = false;
+                eprintln!("{}: error: {error:#}", file.display_name());
+                let errors = error.downcast_ref::<Failure>().map_or_else(
+                    || vec![Diagnostic::new("error", format!("{error:#}"))],
+                    |f| f.0.clone(),
+                );
+                results.push(json!({
+                    "success": false,
+                    "frame": file.display_name(),
+                    "errors": errors,
+                }));
+            }
+        }
+    }
+    if arguments.json {
+        println!(
+            "{:#}",
+            json!({ "success": all_succeeded, "results": results })
+        );
+    }
+    Ok(if all_succeeded {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+#[derive(Serialize)]
+struct RenderResult {
+    success: bool,
+    frame: String,
+    output: PathBuf,
+    width: u32,
+    height: u32,
+    format: &'static str,
+    warnings: Vec<Diagnostic>,
+}
+
+fn render_frame(
+    project: &Project,
+    tokens: &Tokens,
+    file: &FrameFile,
+    options: &RenderOptions,
+) -> Result<RenderResult> {
+    let scene = frames::load_scene(file, tokens)?;
+    let scale = options.scale.unwrap_or(project.config.render.scale);
+    let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;
+    let output = match options.output {
+        Some(path) => absolute_output_path(path)?,
+        None => project.default_output_path(file),
+    };
+    if output == file.path || project.is_source_path(&output) {
+        return Err(Failure::from(Diagnostic::new(
+            "output_overwrites_source",
+            format!("refusing to write over project source {}", output.display()),
+        ))
+        .into());
+    }
+    renderer::write_png(&canvas, &output)?;
+    Ok(RenderResult {
+        success: true,
+        frame: scene.id,
+        output,
+        width: canvas.width(),
+        height: canvas.height(),
+        format: "png",
+        warnings: scene.warnings,
+    })
+}
+
+/// Resolves symlinks in the parent so a link cannot smuggle a write into the source tree.
+fn absolute_output_path(path: &Path) -> Result<PathBuf> {
+    let absolute = env::current_dir()
+        .context("cannot read current directory")?
+        .join(path);
+    let parent = absolute
+        .parent()
+        .context("output path has no parent directory")?;
+    let file_name = absolute
+        .file_name()
+        .context("output path has no file name")?;
+    fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+    let parent = parent
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", parent.display()))?;
+    Ok(parent.join(file_name))
+}
+
+fn print_render_result(result: &RenderResult, emit_json: bool) {
+    for warning in &result.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if emit_json {
+        println!("{:#}", json!(result));
+    } else {
+        println!(
+            "{} ({}×{})",
+            result.output.display(),
+            result.width,
+            result.height
+        );
+    }
 }
 
 fn run_validate(arguments: &Cli, frame: Option<&str>) -> Result<ExitCode> {

@@ -3,6 +3,7 @@ mod diagnostics;
 mod document;
 mod frames;
 mod project;
+mod renderer;
 mod scene;
 mod tokens;
 

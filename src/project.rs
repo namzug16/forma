@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::diagnostics::{Diagnostic, Failure};
+use crate::frames::FrameFile;
 use crate::tokens::Tokens;
 
 const PROJECT_DIRECTORY: &str = "forma";
@@ -129,12 +130,37 @@ impl Project {
         .into())
     }
 
+    /// Joins a configured path, dropping the `./` that configs conventionally start with.
+    fn resolve(&self, configured_path: &Path) -> PathBuf {
+        self.directory.join(configured_path).components().collect()
+    }
+
     pub fn frames_directory(&self) -> PathBuf {
-        self.directory.join(&self.config.frames)
+        self.resolve(&self.config.frames)
+    }
+
+    /// The source tree that rendering must never write into.
+    pub fn is_source_path(&self, path: &Path) -> bool {
+        let frames = self.frames_directory();
+        let assets = self.resolve(&self.config.assets);
+        path.starts_with(frames)
+            || path.starts_with(assets)
+            || path == self.resolve(&self.config.tokens)
+            || path == self.directory.join(CONFIG_FILE)
+    }
+
+    pub fn default_output_path(&self, file: &FrameFile) -> PathBuf {
+        let relative_path = match &file.relative_path {
+            Some(relative_path) => relative_path.as_path(),
+            None => Path::new(file.path.file_name().unwrap_or_default()),
+        };
+        self.resolve(&self.config.output)
+            .join(relative_path)
+            .with_extension("png")
     }
 
     pub fn tokens(&self) -> Result<Tokens> {
-        Tokens::load(&self.directory.join(&self.config.tokens))
+        Tokens::load(&self.resolve(&self.config.tokens))
     }
 
     fn load(root: &Path) -> Result<Self> {
