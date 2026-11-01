@@ -3,6 +3,7 @@
 mod frame_render;
 mod frame_tree;
 mod project_watch;
+mod style;
 mod viewer;
 mod viewport;
 
@@ -14,6 +15,7 @@ actions!(forma_desktop, [Quit, FitFrame]);
 fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
+        style::apply_dark_theme(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-0", FitFrame, None),
@@ -32,10 +34,21 @@ fn main() {
                 disabled: false,
             },
         ]);
-        let (_, viewer) =
-            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(Viewer::new))
-                .expect("the main window opens");
+        let (_, viewer) = gpui_kit::open_window(window_options(), cx, |_, cx| cx.new(Viewer::new))
+            .expect("the main window opens");
         cx.on_action(move |_: &FitFrame, cx| viewer.update(cx, Viewer::fit_frame));
         cx.activate(true);
     });
+}
+
+/// Panels run up to the window's edge, with the traffic lights floating over them.
+fn window_options() -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some("Forma".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(14.), px(14.))),
+        }),
+        ..Default::default()
+    }
 }
