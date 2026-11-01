@@ -15,6 +15,15 @@ const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16384;
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 
+/// Lowercase letters, digits and inner hyphens: safe in a path and a URL.
+pub fn is_safe_slug(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 /// Decoded pixels in straight (not premultiplied) RGBA.
 #[derive(Debug)]
 pub struct DecodedImage {

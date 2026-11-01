@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::frames::{self, FrameFile};
+use crate::icons;
 use crate::inspect;
 use crate::project::{self, Project};
 use crate::renderer;
@@ -79,6 +80,11 @@ pub enum Command {
         #[arg(long)]
         layer: Option<String>,
     },
+    /// Find and install Lucide icons
+    Icons {
+        #[command(subcommand)]
+        command: IconsCommand,
+    },
     /// Print the resolved design tokens
     Tokens,
     /// Print the document JSON Schema
@@ -87,12 +93,21 @@ pub enum Command {
     Version,
 }
 
+#[derive(Subcommand)]
+pub enum IconsCommand {
+    /// Search the Lucide collection
+    Search { query: String },
+    /// Show an icon's source and license
+    Info { name: String },
+}
+
 pub fn run(arguments: Cli) -> Result<ExitCode> {
     match &arguments.command {
         Some(Command::Init { path }) => run_init(path.clone(), arguments.json)?,
         Some(Command::Inspect { frame, layer }) => {
             run_inspect(&arguments, frame, layer.as_deref())?;
         }
+        Some(Command::Icons { command }) => run_icons(command, arguments.json)?,
         Some(Command::Tokens) => run_tokens(&arguments)?,
         Some(Command::Schema) => println!("{:#}", document::json_schema()),
         Some(Command::List) | None => run_list(&arguments)?,
@@ -379,6 +394,30 @@ fn run_inspect(arguments: &Cli, frame: &str, layer: Option<&str>) -> Result<()> 
         println!("{report:#}");
     } else {
         inspect::print_outline(&report);
+    }
+    Ok(())
+}
+
+fn run_icons(command: &IconsCommand, emit_json: bool) -> Result<()> {
+    match command {
+        IconsCommand::Search { query } => {
+            let names = icons::search(query).map_err(Failure::from)?;
+            if emit_json {
+                println!("{:#}", json!({ "icons": names }));
+            } else {
+                names.iter().for_each(|name| println!("{name}"));
+            }
+        }
+        IconsCommand::Info { name } => {
+            let info = icons::info(name).map_err(Failure::from)?;
+            if emit_json {
+                println!("{:#}", json!(info));
+            } else {
+                println!("{} ({})", info.name, info.collection);
+                println!("license  {} {}", info.license, info.license_url);
+                println!("source   {}", info.source);
+            }
+        }
     }
     Ok(())
 }
