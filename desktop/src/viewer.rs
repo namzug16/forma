@@ -65,7 +65,7 @@ pub struct Viewer {
     collapsed_folders: HashSet<SharedString>,
     selection: Option<Selection>,
     content: Content,
-    /// `None` until the frame is fitted to the canvas.
+    /// `None` while the frame simply fits the canvas, until the user pans or zooms.
     viewport: Option<Viewport>,
     /// Filled in on paint: input events arrive in window coordinates.
     canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -423,7 +423,8 @@ impl Viewer {
             .child(resizable_panel().child(self.render_content(cx)))
             .child(
                 resizable_panel()
-                    .size(px(300.))
+                    .visible(matches!(self.selection, Some(Selection::Frame(_))))
+                    .size(px(260.))
                     .size_range(px(200.)..px(600.))
                     .child(self.render_details(cx)),
             )
@@ -434,23 +435,20 @@ impl Viewer {
         cx.notify();
     }
 
-    fn fitted_viewport(&mut self) -> Option<Viewport> {
-        let Content::Frame(frame) = &self.content else {
-            return None;
-        };
+    fn current_viewport(&self) -> Option<Viewport> {
+        let frame = self.displayed_frame()?;
         let canvas_size = self.canvas_bounds.get().size;
-        let viewport = self.viewport.get_or_insert_with(|| {
+        Some(self.viewport.unwrap_or_else(|| {
             Viewport::fitting(
                 size(frame.width, frame.height),
                 size(canvas_size.width.into(), canvas_size.height.into()),
             )
-        });
-        Some(*viewport)
+        }))
     }
 
     fn zoom_at(&mut self, factor: f32, window_position: Point<Pixels>, cx: &mut Context<Self>) {
         let origin = self.canvas_bounds.get().origin;
-        if let Some(viewport) = &mut self.viewport {
+        if let Some(mut viewport) = self.current_viewport() {
             viewport.zoom_at(
                 factor,
                 point(
@@ -458,19 +456,21 @@ impl Viewer {
                     (window_position.y - origin.y).into(),
                 ),
             );
+            self.viewport = Some(viewport);
             cx.notify();
         }
     }
 
     fn pan(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
-        if let Some(viewport) = &mut self.viewport {
+        if let Some(mut viewport) = self.current_viewport() {
             viewport.pan(point(delta.x.into(), delta.y.into()));
+            self.viewport = Some(viewport);
             cx.notify();
         }
     }
 
     fn render_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = self.fitted_viewport();
+        let viewport = self.current_viewport();
         let canvas_bounds = self.canvas_bounds.clone();
         let secondary_text = cx.theme().muted_foreground;
         div()
@@ -481,7 +481,13 @@ impl Viewer {
             .bg(style::canvas_background())
             .child(
                 canvas(
-                    move |bounds, _, _| canvas_bounds.set(bounds),
+                    move |bounds, window, _| {
+                        let was_resized = canvas_bounds.replace(bounds).size != bounds.size;
+                        if was_resized {
+                            // This paint used the old size, so a fitted frame needs another.
+                            window.on_next_frame(|window, _| window.refresh());
+                        }
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()
@@ -634,22 +640,15 @@ impl Viewer {
     }
 
     fn render_details_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let frame = self.displayed_frame();
-        let (title, subtitle) = match (&self.selection, frame) {
-            (Some(Selection::Tokens), _) => ("Tokens".to_owned(), "Design tokens"),
-            (Some(Selection::Config), _) => ("Config".to_owned(), "Project settings"),
-            (_, Some(frame)) => (frame_title(frame), "Frame"),
-            (Some(Selection::Frame(relative_path)), None) => (
-                relative_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                "Frame",
-            ),
-            _ => ("Inspect".to_owned(), "Nothing selected"),
+        let title = match (self.displayed_frame(), &self.selection) {
+            (Some(frame), _) => frame_title(frame),
+            (None, Some(Selection::Frame(relative_path))) => relative_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            _ => String::new(),
         };
-        let zoom = frame.and(self.viewport).map(|viewport| viewport.zoom);
         div()
             .flex_none()
             .pt(px(TRAFFIC_LIGHTS_HEIGHT))
@@ -658,27 +657,16 @@ impl Viewer {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                h_flex()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .children(zoom.map(|zoom| {
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .child(format!("{:.0}%", zoom * 100.))
-                    })),
+                div()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(subtitle),
+                    .child("Frame"),
             )
     }
 
@@ -904,18 +892,6 @@ fn layer_icon(kind: &str) -> IconName {
 
 fn push_layer_rows(layers: &Value, depth: usize, rows: &mut Vec<AnyElement>, cx: &App) {
     for layer in layers.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let bounds = &layer["clippedBounds"];
-        let placement = if bounds.is_null() {
-            "clipped".to_owned()
-        } else {
-            format!(
-                "{:.0}, {:.0}  {:.0} × {:.0}",
-                bounds["x"].as_f64().unwrap_or_default(),
-                bounds["y"].as_f64().unwrap_or_default(),
-                bounds["width"].as_f64().unwrap_or_default(),
-                bounds["height"].as_f64().unwrap_or_default(),
-            )
-        };
         let secondary_text = cx.theme().muted_foreground;
         rows.push(
             h_flex()
@@ -929,16 +905,9 @@ fn push_layer_rows(layers: &Value, depth: usize, rows: &mut Vec<AnyElement>, cx:
                 ))
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
                         .truncate()
                         .child(layer["id"].as_str().unwrap_or_default().to_owned()),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(secondary_text)
-                        .child(placement),
                 )
                 .into_any_element(),
         );
