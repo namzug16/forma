@@ -7,13 +7,14 @@ mod style;
 mod viewer;
 mod viewport;
 
+use gpui_kit::assets::AllAssets;
 use gpui_kit::*;
 use viewer::Viewer;
 
 actions!(forma_desktop, [Quit, FitFrame]);
 
 fn main() {
-    gpui_kit::application().run(|cx| {
+    gpui_kit::application().with_assets(AllAssets).run(|cx| {
         gpui_kit::init(cx);
         style::apply_dark_theme(cx);
         cx.bind_keys([

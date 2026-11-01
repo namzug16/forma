@@ -12,12 +12,13 @@ use forma::diagnostics::Failure;
 use forma::frames::{self, FrameFile};
 use forma::project::Project;
 use futures::StreamExt as _;
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
+use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use notify::{Event, RecommendedWatcher};
@@ -27,6 +28,11 @@ use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
 use crate::project_watch::{self, WatchedPaths};
 use crate::viewport::Viewport;
+
+const ICON_SIZE: f32 = 14.;
+const TREE_ROW_HEIGHT: f32 = 28.;
+/// Leaves room for the window's traffic lights above the panels' own content.
+const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
 /// Long enough to gather a burst of writes into one render without feeling late.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -312,29 +318,99 @@ impl Viewer {
     }
 
     fn render_tree(&self) -> impl IntoElement {
-        tree(&self.tree_state, |index, entry, _, _, _| {
-            let disclosure = match (entry.is_folder(), entry.is_expanded()) {
-                (false, _) => "",
-                (true, true) => "▾ ",
-                (true, false) => "▸ ",
+        tree(&self.tree_state, |index, entry, is_selected, _, cx| {
+            let secondary_text = cx.theme().muted_foreground;
+            let is_frames_root = entry.is_folder() && entry.depth() == 0;
+            let item_icon = match Selection::from_item_id(&entry.item().id) {
+                Some(Selection::Frame(_)) => Some(IconName::Frame),
+                Some(Selection::Tokens) => Some(IconName::Palette),
+                Some(Selection::Config) => Some(IconName::Settings2),
+                None if is_frames_root => None,
+                None if entry.is_expanded() => Some(IconName::FolderOpen),
+                None => Some(IconName::Folder),
             };
+            let disclosure = entry.is_folder().then(|| {
+                icon(
+                    if entry.is_expanded() {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    },
+                    secondary_text,
+                )
+            });
             ListItem::new(index)
-                .pl(px(8. + 14. * entry.depth() as f32))
-                .child(format!("{disclosure}{}", entry.item().label))
+                .h(px(TREE_ROW_HEIGHT))
+                .py_0()
+                .px_0()
+                .pl(px(8. + 16. * entry.depth() as f32))
+                .rounded(cx.theme().radius)
+                .text_size(px(13.))
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .min_w_0()
+                        .child(div().flex_none().w(px(ICON_SIZE)).children(disclosure))
+                        .children(item_icon.map(|name| icon(name, secondary_text)))
+                        .child(
+                            div()
+                                .truncate()
+                                .when(is_frames_root || is_selected, |label| {
+                                    label.font_weight(FontWeight::MEDIUM)
+                                })
+                                .child(entry.item().label.clone()),
+                        ),
+                )
         })
+    }
+
+    fn render_project_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let project_name = self
+            .project
+            .as_ref()
+            .and_then(|project| project.directory.parent())
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let frame_count = match self.frames.len() {
+            1 => "1 frame".to_owned(),
+            count => format!("{count} frames"),
+        };
+        div()
+            .flex_none()
+            .pt(px(TRAFFIC_LIGHTS_HEIGHT))
+            .px_4()
+            .pb_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(project_name),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(frame_count),
+            )
     }
 
     fn render_project(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         h_resizable("panels")
             .child(
                 resizable_panel()
-                    .size(px(240.))
-                    .size_range(px(160.)..px(480.))
+                    .size(px(260.))
+                    .size_range(px(180.)..px(480.))
                     .child(
                         div()
                             .size_full()
+                            .flex()
+                            .flex_col()
                             .bg(cx.theme().sidebar)
-                            .child(self.render_tree()),
+                            .child(self.render_project_header(cx))
+                            .child(div().flex_1().min_h_0().p_2().child(self.render_tree())),
                     ),
             )
             .child(resizable_panel().child(self.render_content(cx)))
@@ -595,6 +671,10 @@ fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Resul
             Ok(Content::Text(text))
         }
     }
+}
+
+fn icon(name: IconName, color: Hsla) -> Icon {
+    Icon::new(name).size(px(ICON_SIZE)).text_color(color)
 }
 
 fn detail_heading(text: &str) -> AnyElement {
