@@ -824,6 +824,33 @@ mod tests {
     }
 
     #[test]
+    fn svg_color_replaces_current_color_but_not_hard_coded_colors() {
+        let directory = tempfile::tempdir().unwrap();
+        // Shaped like an Iconify download, whose size is in `em`.
+        fs::write(
+            directory.path().join("icon.svg"),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+                <rect width="12" height="24" fill="currentColor"/>
+                <rect x="12" width="12" height="24" fill="#00FF00"/></svg>"##,
+        )
+        .unwrap();
+        let resources = Resources {
+            tokens: Tokens::parse(r##"{ "colors": { "icon": "#0000FF80" } }"##).unwrap(),
+            assets: Assets::new(directory.path().into()),
+            fonts: FontLibrary::default(),
+        };
+        let frame = frame_with(
+            r#"{ "id": "icon", "type": "svg", "src": "icon.svg", "width": 100, "height": 100,
+                 "color": "$colors.icon" }"#,
+        );
+        let scene = build(&parse_frame(&frame).unwrap(), &resources).unwrap();
+        let canvas = render(&scene, 1.0).unwrap();
+
+        assert_near(pixel(&canvas, 25, 50), [0, 0, 255, 128]);
+        assert_near(pixel(&canvas, 75, 50), [0, 255, 0, 255]);
+    }
+
+    #[test]
     fn later_children_draw_over_earlier_ones() {
         let frame = frame_with(&format!(
             r##"{{ "id": "group", "type": "group", "children": [

@@ -229,6 +229,8 @@ pub struct SvgProperties {
     pub src: String,
     pub width: NumberValue,
     pub height: NumberValue,
+    /// Replaces `currentColor`; colors hard-coded in the file stay as they are.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

@@ -9,6 +9,7 @@ use usvg::roxmltree::{Document, ParsingOptions};
 use usvg::{ImageHrefResolver, Options, Tree};
 
 use crate::diagnostics::Diagnostic;
+use crate::tokens::Color;
 
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16384;
@@ -88,17 +89,23 @@ impl Assets {
         Ok((resolved, image))
     }
 
-    pub fn load_svg(&self, relative_path: &str, path: &str) -> Result<(PathBuf, Tree), Diagnostic> {
+    pub fn load_svg(
+        &self,
+        relative_path: &str,
+        current_color: Option<Color>,
+        path: &str,
+    ) -> Result<(PathBuf, Tree), Diagnostic> {
         let (resolved, bytes) = self.read(relative_path, path)?;
-        let tree =
-            parse_svg(&bytes).map_err(|(code, message)| Diagnostic::new(code, message).at(path))?;
+        let tree = parse_svg(&bytes, current_color)
+            .map_err(|(code, message)| Diagnostic::new(code, message).at(path))?;
         Ok((resolved, tree))
     }
 }
 
 /// Scripts are never executed by usvg. External references are refused here; only self-contained
 /// `data:` images load. Text is rejected because SVG font selection would bypass frame font rules.
-fn parse_svg(bytes: &[u8]) -> Result<Tree, (&'static str, String)> {
+/// `current_color` resolves `currentColor`; the file's bytes stay untouched.
+fn parse_svg(bytes: &[u8], current_color: Option<Color>) -> Result<Tree, (&'static str, String)> {
     let invalid = |error: &dyn std::fmt::Display| ("invalid_svg", error.to_string());
     let text = std::str::from_utf8(bytes).map_err(|error| invalid(&error))?;
     let parsing_options = ParsingOptions {
@@ -121,6 +128,7 @@ fn parse_svg(bytes: &[u8]) -> Result<Tree, (&'static str, String)> {
             resolve_string: Box::new(|_, _| None),
             ..ImageHrefResolver::default()
         },
+        style_sheet: current_color.map(|color| format!("svg {{ color: {color} }}")),
         ..Options::default()
     };
     Tree::from_data(bytes, &options).map_err(|error| invalid(&error))
@@ -184,15 +192,20 @@ mod tests {
         let open_tag = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">"#;
 
         let linking = format!(r#"{open_tag}<image href="{}"/></svg>"#, secret.display());
-        let tree = parse_svg(linking.as_bytes()).unwrap();
+        let tree = parse_svg(linking.as_bytes(), None).unwrap();
         assert!(!tree.root().has_children());
 
         let drawing = format!(r#"{open_tag}<rect width="1" height="1"/></svg>"#);
-        assert!(parse_svg(drawing.as_bytes()).unwrap().root().has_children());
+        assert!(
+            parse_svg(drawing.as_bytes(), None)
+                .unwrap()
+                .root()
+                .has_children()
+        );
 
         let with_text = format!("{open_tag}<text>hi</text></svg>");
         assert_eq!(
-            parse_svg(with_text.as_bytes()).unwrap_err().0,
+            parse_svg(with_text.as_bytes(), None).unwrap_err().0,
             "unsupported_svg_text"
         );
     }

@@ -59,15 +59,21 @@ impl Color {
     }
 }
 
-impl Serialize for Color {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl std::fmt::Display for Color {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             red,
             green,
             blue,
             alpha,
         } = self;
-        serializer.collect_str(&format_args!("#{red:02X}{green:02X}{blue:02X}{alpha:02X}"))
+        write!(formatter, "#{red:02X}{green:02X}{blue:02X}{alpha:02X}")
+    }
+}
+
+impl Serialize for Color {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

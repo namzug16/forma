@@ -104,7 +104,8 @@ different weight is reported as a warning.
 **Images** accept PNG, JPEG and WebP with `fit` of `cover` (default), `contain` or `fill`.
 
 **SVG** assets are fitted inside the box, centered, without distortion. External references are
-ignored, only `data:` images load, and `<text>` is rejected; convert it to paths.
+ignored, only `data:` images load, and `<text>` is rejected; convert it to paths. `color` sets
+`currentColor`, which is black by default; colors hard-coded in the file stay as they are.
 
 **Scale.** `--scale` must produce whole pixels. Rasters are limited to 16384 pixels per side and
 100 million pixels in total, assets to 64 MB, and group nesting to 64 levels.

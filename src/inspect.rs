@@ -142,9 +142,10 @@ fn describe_node(
             insert(details, "type", json!("image"));
             insert(details, "source", json!(source));
         }
-        SceneKind::Svg { source, .. } => {
+        SceneKind::Svg { source, color, .. } => {
             insert(details, "type", json!("svg"));
             insert(details, "source", json!(source));
+            insert(details, "color", json!(color));
         }
         SceneKind::Group {
             children,

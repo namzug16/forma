@@ -191,6 +191,7 @@ pub enum SceneKind {
     Svg {
         tree: Tree,
         source: PathBuf,
+        color: Option<Color>,
     },
     Group {
         children: Vec<SceneNode>,
@@ -548,9 +549,22 @@ impl SceneBuilder<'_> {
             NodeKind::Svg(svg) => {
                 let width = self.dimension(&svg.width, &format!("{path}.width"), layer);
                 let height = self.dimension(&svg.height, &format!("{path}.height"), layer);
-                let loaded = self.assets.load_svg(&svg.src, &format!("{path}.src"));
+                let color_path = format!("{path}.color");
+                let color = match &svg.color {
+                    Some(color) => {
+                        Some(self.record(self.tokens.color(color, &color_path), Some(layer))?)
+                    }
+                    None => None,
+                };
+                let loaded = self
+                    .assets
+                    .load_svg(&svg.src, color, &format!("{path}.src"));
                 let (source, tree) = self.record(loaded, Some(layer))?;
-                let kind = SceneKind::Svg { tree, source };
+                let kind = SceneKind::Svg {
+                    tree,
+                    source,
+                    color,
+                };
                 (kind, Bounds::sized(width?, height?), true)
             }
             NodeKind::Text(text) => {
