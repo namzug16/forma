@@ -146,6 +146,26 @@ it.
 The same inputs, fonts and Forma version on the same platform produce identical bytes. System fonts
 vary between machines, so use font files for output that must match everywhere.
 
+## Desktop viewer
+
+`desktop/` is a read-only macOS app (macOS 15 or later) for watching a project while agents
+work on it. It renders in memory and never writes to the project.
+
+```sh
+make desktop      # run from source
+make desktop-app  # build target/Forma.app
+```
+
+Open a project directory to browse its frames, tokens and config. The tree follows the files
+that exist, and the selected frame re-renders when it or the tokens and assets change. A frame
+that cannot render shows its errors for your agent to fix.
+
+| Input | Action |
+| --- | --- |
+| Two-finger scroll or drag | Pan |
+| Pinch or `Cmd`+scroll | Zoom at the cursor |
+| `Cmd-0` | Fit the frame |
+
 ## Development
 
 `cargo test` needs internet access: the install tests download from the real Iconify and Fontsource
