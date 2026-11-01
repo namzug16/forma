@@ -103,8 +103,9 @@ that box is as wide as the longest line. Text is left-to-right in V1. `lineHeigh
 **Fonts.** `file` is relative to the assets directory and takes precedence over `family`. `family`
 searches `assets/fonts` first, then system fonts, so a checked-in font renders the same on every
 machine. A missing font or glyph is an error unless
-`fallbacks` lists families to try. One font is used per text node, and using a fallback or a
-different weight is reported as a warning.
+`fallbacks` lists families to try. One family is used per text node, and using a fallback or a
+different weight is reported as a warning. Files of a family with the same weight and style combine,
+so a font split by character subset works as one font, even within a line.
 
 **Images** accept PNG, JPEG and WebP with `fit` of `cover` (default), `contain` or `fill`.
 
@@ -133,3 +134,5 @@ vary between machines, so use font files for output that must match everywhere.
 ## License
 
 MIT. `tests/fixtures/Tuffy.ttf` is public domain; see `tests/fixtures/Tuffy-LICENSE.txt`.
+`tests/fixtures/Inter-*.ttf` are under the SIL Open Font License; see
+`tests/fixtures/Inter-LICENSE.txt`.

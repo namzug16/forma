@@ -26,12 +26,18 @@ pub struct TextLayout {
     pub warnings: Vec<Diagnostic>,
 }
 
+/// One family's matching files. Distributions like Fontsource split a font by character subset,
+/// so several files can together form one font; the first sets the line metrics.
 struct LoadedFont {
-    data: Vec<u8>,
-    face_index: u32,
+    files: Vec<FontFile>,
     source: String,
     is_declared_fallback: bool,
     warning: Option<Diagnostic>,
+}
+
+struct FontFile {
+    data: Vec<u8>,
+    face_index: u32,
 }
 
 /// What to lay out, and where it came from for diagnostics.
@@ -127,8 +133,10 @@ impl FontLibrary {
         if let Some(file) = &font.file {
             let (resolved, data) = assets.read(file, &format!("{path}.file"))?;
             candidates.push(LoadedFont {
-                data,
-                face_index: 0,
+                files: vec![FontFile {
+                    data,
+                    face_index: 0,
+                }],
                 source: resolved.display().to_string(),
                 is_declared_fallback: false,
                 warning: None,
@@ -159,18 +167,23 @@ impl FontLibrary {
             text, font, path, ..
         } = *request;
         for candidate in self.candidates(font, assets, path)? {
-            let face =
-                Face::from_slice(&candidate.data, candidate.face_index).ok_or_else(|| {
-                    Diagnostic::new(
-                        "invalid_font",
-                        format!("{} is not a usable font", candidate.source),
-                    )
-                    .at(path)
-                })?;
-            if !covers_text(&face, text) {
+            let faces = candidate
+                .files
+                .iter()
+                .map(|file| {
+                    Face::from_slice(&file.data, file.face_index).ok_or_else(|| {
+                        Diagnostic::new(
+                            "invalid_font",
+                            format!("{} is not a usable font", candidate.source),
+                        )
+                        .at(path)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if !covers_text(&faces, text) {
                 continue;
             }
-            let mut layout = lay_out(&face, request);
+            let mut layout = lay_out(&faces, request);
             layout.warnings.extend(candidate.warning);
             if candidate.is_declared_fallback {
                 layout.warnings.push(
@@ -221,24 +234,77 @@ fn load_from_database(
         )
         .at(path)
     });
-    let (data, face_index) =
-        database.with_face_data(id, |data, face_index| (data.to_vec(), face_index))?;
+    let siblings = database
+        .faces()
+        .filter(|other| {
+            other.id != id
+                && other.weight == face.weight
+                && other.style == face.style
+                && other.stretch == face.stretch
+                && other
+                    .families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
+        })
+        .map(|other| other.id);
+    let files = std::iter::once(id)
+        .chain(siblings)
+        .map(|id| {
+            database.with_face_data(id, |data, face_index| FontFile {
+                data: data.to_vec(),
+                face_index,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(LoadedFont {
-        data,
-        face_index,
+        files,
         source: source_of(id),
         is_declared_fallback: false,
         warning,
     })
 }
 
-fn covers_text(face: &Face, text: &str) -> bool {
-    text.chars()
-        .filter(|character| !character.is_whitespace() && !character.is_control())
-        .all(|character| face.glyph_index(character).is_some())
+/// A base character with its combining marks, which must stay together to compose.
+fn clusters(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut starts = text
+        .char_indices()
+        .filter(|(_, character)| !matches!(character, '\u{0300}'..='\u{036F}'))
+        .map(|(index, _)| index)
+        .peekable();
+    std::iter::from_fn(move || {
+        let start = starts.next()?;
+        let end = starts.peek().copied().unwrap_or(text.len());
+        Some((start, &text[start..end]))
+    })
+}
+
+fn needs_no_glyph(cluster: &str) -> bool {
+    cluster
+        .chars()
+        .all(|character| character.is_whitespace() || character.is_control())
+}
+
+/// Shaping decides for marks, because a font can compose them into a single glyph it does have.
+fn face_covers(face: &Face, cluster: &str) -> bool {
+    let mut characters = cluster.chars();
+    if let (Some(character), None) = (characters.next(), characters.next()) {
+        return face.glyph_index(character).is_some();
+    }
+    let mut buffer = UnicodeBuffer::new();
+    buffer.push_str(cluster);
+    buffer.guess_segment_properties();
+    let shaped = rustybuzz::shape(face, &[], buffer);
+    shaped.glyph_infos().iter().all(|info| info.glyph_id != 0)
+}
+
+fn covers_text(faces: &[Face], text: &str) -> bool {
+    clusters(text).all(|(_, cluster)| {
+        needs_no_glyph(cluster) || faces.iter().any(|face| face_covers(face, cluster))
+    })
 }
 
 struct ShapedGlyph {
+    face_index: usize,
     glyph_id: u16,
     x_offset: f64,
     y_offset: f64,
@@ -250,24 +316,56 @@ struct ShapedLine {
     width: f64,
 }
 
-fn shape_line(face: &Face, line: &str, font: &ResolvedFont, units_to_pixels: f64) -> ShapedLine {
-    let mut buffer = UnicodeBuffer::new();
-    buffer.push_str(line);
-    buffer.guess_segment_properties();
-    // V1 lays out left to right only.
-    buffer.set_direction(Direction::LeftToRight);
-    let shaped = rustybuzz::shape(face, &[], buffer);
-    let glyphs: Vec<_> = shaped
-        .glyph_infos()
-        .iter()
-        .zip(shaped.glyph_positions())
-        .map(|(info, position)| ShapedGlyph {
-            glyph_id: info.glyph_id as u16,
-            x_offset: f64::from(position.x_offset) * units_to_pixels,
-            y_offset: f64::from(position.y_offset) * units_to_pixels,
-            advance: f64::from(position.x_advance) * units_to_pixels + font.letter_spacing,
-        })
-        .collect();
+fn units_to_pixels(face: &Face, font: &ResolvedFont) -> f64 {
+    font.size / f64::from(face.units_per_em())
+}
+
+/// Splits a line into runs of one font file, staying on the current file while it can.
+fn file_runs<'a>(faces: &[Face], line: &'a str) -> Vec<(usize, &'a str)> {
+    let mut runs = Vec::new();
+    let (mut run_start, mut current_face) = (0, 0);
+    for (offset, cluster) in clusters(line) {
+        if needs_no_glyph(cluster) || face_covers(&faces[current_face], cluster) {
+            continue;
+        }
+        let covering_face = faces.iter().position(|face| face_covers(face, cluster));
+        let next_face = covering_face.unwrap_or(current_face);
+        if next_face != current_face {
+            if offset > run_start {
+                runs.push((current_face, &line[run_start..offset]));
+            }
+            (run_start, current_face) = (offset, next_face);
+        }
+    }
+    runs.push((current_face, &line[run_start..]));
+    runs
+}
+
+fn shape_line(faces: &[Face], line: &str, font: &ResolvedFont) -> ShapedLine {
+    let mut glyphs = Vec::new();
+    for (face_index, run) in file_runs(faces, line) {
+        let face = &faces[face_index];
+        let scale = units_to_pixels(face, font);
+        let mut buffer = UnicodeBuffer::new();
+        buffer.push_str(run);
+        buffer.guess_segment_properties();
+        // V1 lays out left to right only.
+        buffer.set_direction(Direction::LeftToRight);
+        let shaped = rustybuzz::shape(face, &[], buffer);
+        glyphs.extend(
+            shaped
+                .glyph_infos()
+                .iter()
+                .zip(shaped.glyph_positions())
+                .map(|(info, position)| ShapedGlyph {
+                    face_index,
+                    glyph_id: info.glyph_id as u16,
+                    x_offset: f64::from(position.x_offset) * scale,
+                    y_offset: f64::from(position.y_offset) * scale,
+                    advance: f64::from(position.x_advance) * scale + font.letter_spacing,
+                }),
+        );
+    }
     let width = glyphs.iter().map(|glyph| glyph.advance).sum();
     ShapedLine { glyphs, width }
 }
@@ -292,7 +390,7 @@ fn wrap_paragraph(paragraph: &str, wrap_width: f64, measure: impl Fn(&str) -> f6
     lines
 }
 
-fn lay_out(face: &Face, request: &TextRequest) -> TextLayout {
+fn lay_out(faces: &[Face], request: &TextRequest) -> TextLayout {
     let TextRequest {
         text,
         font,
@@ -300,26 +398,27 @@ fn lay_out(face: &Face, request: &TextRequest) -> TextLayout {
         align,
         path,
     } = *request;
-    let units_to_pixels = font.size / f64::from(face.units_per_em());
     let line_strings: Vec<String> = text
         .split('\n')
         .flat_map(|paragraph| match wrap_width {
-            Some(width) => wrap_paragraph(paragraph, width, |line| {
-                shape_line(face, line, font, units_to_pixels).width
-            }),
+            Some(width) => {
+                wrap_paragraph(paragraph, width, |line| shape_line(faces, line, font).width)
+            }
             None => vec![paragraph.to_owned()],
         })
         .collect();
     let lines: Vec<ShapedLine> = line_strings
         .iter()
-        .map(|line| shape_line(face, line, font, units_to_pixels))
+        .map(|line| shape_line(faces, line, font))
         .collect();
 
     let widest_line = lines.iter().map(|line| line.width).fold(0.0, f64::max);
     let box_width = wrap_width.unwrap_or(widest_line);
     let line_height = font.size * font.line_height;
-    let ascent = f64::from(face.ascender()) * units_to_pixels;
-    let descent = f64::from(face.descender()) * units_to_pixels;
+    let metrics_face = &faces[0];
+    let metrics_scale = units_to_pixels(metrics_face, font);
+    let ascent = f64::from(metrics_face.ascender()) * metrics_scale;
+    let descent = f64::from(metrics_face.descender()) * metrics_scale;
     let baseline_within_line = (line_height - (ascent - descent)) / 2.0 + ascent;
 
     let mut builder = PathBuilder::new();
@@ -331,11 +430,12 @@ fn lay_out(face: &Face, request: &TextRequest) -> TextLayout {
         };
         let baseline = line_index as f64 * line_height + baseline_within_line;
         for glyph in &line.glyphs {
+            let face = &faces[glyph.face_index];
             let mut sink = GlyphOutlineSink {
                 builder: &mut builder,
                 origin_x: pen_x + glyph.x_offset,
                 origin_y: baseline - glyph.y_offset,
-                units_to_pixels,
+                units_to_pixels: units_to_pixels(face, font),
             };
             face.outline_glyph(GlyphId(glyph.glyph_id), &mut sink);
             pen_x += glyph.advance;
@@ -491,6 +591,69 @@ mod tests {
         let error = FontLibrary::default().project_fonts(&assets).unwrap_err();
 
         assert_eq!(error.code, "invalid_font");
+    }
+
+    /// Assets holding Inter split across three subset files, as a Fontsource install leaves it.
+    fn split_inter_assets() -> (tempfile::TempDir, Assets) {
+        let assets_directory = tempfile::tempdir().unwrap();
+        let fonts_directory = assets_directory.path().join("fonts/inter");
+        std::fs::create_dir_all(&fonts_directory).unwrap();
+        for subset in ["cyrillic", "latin", "vietnamese"] {
+            let name = format!("Inter-{subset}-400-normal.ttf");
+            let bytes = fixture_assets().read(&name, "file").unwrap().1;
+            std::fs::write(fonts_directory.join(name), bytes).unwrap();
+        }
+        let assets = Assets::new(assets_directory.path().into());
+        (assets_directory, assets)
+    }
+
+    fn inter_layout(text: &str, assets: &Assets) -> Result<TextLayout, Diagnostic> {
+        let font = ResolvedFont {
+            family: Some("Inter".to_owned()),
+            file: None,
+            ..fixture_font()
+        };
+        let request = TextRequest {
+            text,
+            font: &font,
+            wrap_width: None,
+            align: TextAlign::Left,
+            path: "font",
+        };
+        FontLibrary::default().layout(&request, assets)
+    }
+
+    #[test]
+    fn one_text_node_draws_from_every_subset_file_of_its_family() {
+        let (_directory, assets) = split_inter_assets();
+
+        let latin = inter_layout("Hello", &assets).unwrap();
+        let cyrillic = inter_layout("Привет", &assets).unwrap();
+        let mixed = inter_layout("HelloПривет", &assets).unwrap();
+
+        assert!((mixed.width - (latin.width + cyrillic.width)).abs() < 1.0);
+        let ink = mixed.outlines.unwrap().bounds();
+        assert!(f64::from(ink.right()) > latin.width + cyrillic.width / 2.0);
+    }
+
+    #[test]
+    fn combining_marks_compose_in_the_file_that_has_the_result() {
+        let (_directory, assets) = split_inter_assets();
+
+        // "e" with two marks: only the Vietnamese file has the composed letter.
+        let decomposed = inter_layout("e\u{0323}\u{0302}", &assets).unwrap();
+        let composed = inter_layout("\u{1EC7}", &assets).unwrap();
+
+        assert_eq!(decomposed.width, composed.width);
+    }
+
+    #[test]
+    fn characters_in_no_subset_file_are_still_an_error() {
+        let (_directory, assets) = split_inter_assets();
+
+        let error = inter_layout("Hello 日本語", &assets).unwrap_err();
+
+        assert_eq!(error.code, "missing_glyphs");
     }
 
     #[test]
