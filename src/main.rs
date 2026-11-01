@@ -2,6 +2,7 @@ mod assets;
 mod cli;
 mod diagnostics;
 mod document;
+mod fonts;
 mod frames;
 mod icons;
 mod inspect;

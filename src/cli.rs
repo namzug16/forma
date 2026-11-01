@@ -8,14 +8,17 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
+use crate::fonts::{self, FontFamily, FontSource};
 use crate::frames::{self, FrameFile};
 use crate::icons;
 use crate::inspect;
 use crate::project::{self, Project};
 use crate::renderer;
 use crate::scene::Resources;
+use crate::text::FontLibrary;
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -80,6 +83,11 @@ pub enum Command {
         #[arg(long)]
         layer: Option<String>,
     },
+    /// Find, check and install fonts
+    Fonts {
+        #[command(subcommand)]
+        command: FontsCommand,
+    },
     /// Find and install Lucide icons
     Icons {
         #[command(subcommand)]
@@ -91,6 +99,18 @@ pub enum Command {
     Schema,
     /// Print the forma version
     Version,
+}
+
+#[derive(Subcommand)]
+pub enum FontsCommand {
+    /// List available font families
+    List {
+        /// Only fonts from this source
+        #[arg(long, value_enum)]
+        source: Option<FontSource>,
+    },
+    /// Check whether a text layer can use a font
+    Check { family: String },
 }
 
 #[derive(Subcommand)]
@@ -111,6 +131,7 @@ pub fn run(arguments: Cli) -> Result<ExitCode> {
         Some(Command::Inspect { frame, layer }) => {
             run_inspect(&arguments, frame, layer.as_deref())?;
         }
+        Some(Command::Fonts { command }) => run_fonts(&arguments, command)?,
         Some(Command::Icons { command }) => run_icons(&arguments, command)?,
         Some(Command::Tokens) => run_tokens(&arguments)?,
         Some(Command::Schema) => println!("{:#}", document::json_schema()),
@@ -398,6 +419,51 @@ fn run_inspect(arguments: &Cli, frame: &str, layer: Option<&str>) -> Result<()> 
         println!("{report:#}");
     } else {
         inspect::print_outline(&report);
+    }
+    Ok(())
+}
+
+fn print_font_family(font: &FontFamily) {
+    let weights: Vec<String> = font.weights.iter().map(ToString::to_string).collect();
+    let styles: Vec<&str> = font.styles.iter().copied().collect();
+    println!(
+        "{:<36} {:<8} {} [{}]",
+        font.family,
+        serde_json::to_value(font.source)
+            .expect("sources serialize to JSON")
+            .as_str()
+            .unwrap_or_default(),
+        weights.join(" "),
+        styles.join(" "),
+    );
+}
+
+fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
+    let assets = open_project(arguments)
+        .ok()
+        .map(|project| Assets::new(project.assets_directory()));
+    let library = FontLibrary::default();
+    match command {
+        FontsCommand::List { source } => {
+            if *source == Some(FontSource::Project) && assets.is_none() {
+                open_project(arguments)?;
+            }
+            let families =
+                fonts::list(&library, assets.as_ref(), *source).map_err(Failure::from)?;
+            if arguments.json {
+                println!("{:#}", json!({ "fonts": families }));
+            } else {
+                families.iter().for_each(print_font_family);
+            }
+        }
+        FontsCommand::Check { family } => {
+            let found = fonts::check(&library, assets.as_ref(), family).map_err(Failure::from)?;
+            if arguments.json {
+                println!("{:#}", json!({ "available": true, "font": found }));
+            } else {
+                print_font_family(&found);
+            }
+        }
     }
     Ok(())
 }

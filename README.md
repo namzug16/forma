@@ -31,6 +31,8 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 | `forma render --all` | Render every frame. |
 | `forma validate FRAME`, `forma validate --all` | Check frames without rendering. |
 | `forma inspect FRAME [--layer ID]` | Report hierarchy, transforms, bounds and resolved values. |
+| `forma fonts list [--source project\|system]` | List families with their weights and styles. |
+| `forma fonts check FAMILY` | Report the font a text layer would use. Exits nonzero if missing. |
 | `forma icons search QUERY` | Search Lucide icons. |
 | `forma icons add NAME` | Download an icon. Never overwrites an existing file. |
 | `forma icons list` | List installed icons. |
