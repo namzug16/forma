@@ -3,6 +3,7 @@ mod cli;
 mod diagnostics;
 mod document;
 mod fonts;
+mod fontsource;
 mod frames;
 mod icons;
 mod inspect;

@@ -1,5 +1,6 @@
 //! HTTPS downloads for the install commands. Rendering never reaches this module.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -11,19 +12,23 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const USER_AGENT: &str = concat!("forma/", env!("CARGO_PKG_VERSION"));
 
+/// Shared so that a font's many files reuse one connection.
+static AGENT: LazyLock<Agent> = LazyLock::new(|| {
+    Agent::config_builder()
+        .timeout_global(Some(TIMEOUT))
+        .http_status_as_error(false)
+        .user_agent(USER_AGENT)
+        .build()
+        .into()
+});
+
 fn network_error(url: &str, problem: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::new("network_error", format!("cannot download {url}: {problem}"))
 }
 
 /// The response body, or `None` when the server reports 404.
 pub fn fetch(url: &str, query: &[(&str, &str)]) -> Result<Option<Vec<u8>>, Diagnostic> {
-    let agent: Agent = Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
-        .http_status_as_error(false)
-        .user_agent(USER_AGENT)
-        .build()
-        .into();
-    let mut response = agent
+    let mut response = AGENT
         .get(url)
         .query_pairs(query.iter().copied())
         .call()

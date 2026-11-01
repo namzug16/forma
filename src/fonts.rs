@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::assets::Assets;
 use crate::diagnostics::Diagnostic;
+use crate::fontsource::{self, CatalogFont};
 use crate::text::FontLibrary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
@@ -16,6 +17,18 @@ use crate::text::FontLibrary;
 pub enum FontSource {
     Project,
     System,
+    #[value(skip)]
+    Fontsource,
+}
+
+impl FontSource {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::System => "system",
+            Self::Fontsource => "fontsource",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -23,7 +36,9 @@ pub struct FontFamily {
     pub family: String,
     pub source: FontSource,
     pub weights: BTreeSet<u16>,
-    pub styles: BTreeSet<&'static str>,
+    pub styles: BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
 }
 
 fn style_name(style: Style) -> &'static str {
@@ -36,7 +51,7 @@ fn style_name(style: Style) -> &'static str {
 
 fn add_face(family: &mut FontFamily, face: &FaceInfo) {
     family.weights.insert(face.weight.0);
-    family.styles.insert(style_name(face.style));
+    family.styles.insert(style_name(face.style).to_owned());
 }
 
 fn new_family(name: &str, source: FontSource) -> FontFamily {
@@ -45,6 +60,7 @@ fn new_family(name: &str, source: FontSource) -> FontFamily {
         source,
         weights: BTreeSet::new(),
         styles: BTreeSet::new(),
+        license: None,
     }
 }
 
@@ -52,7 +68,12 @@ fn new_family(name: &str, source: FontSource) -> FontFamily {
 fn families(database: &Database, source: FontSource) -> Vec<FontFamily> {
     let mut families: BTreeMap<&str, FontFamily> = BTreeMap::new();
     for face in database.faces() {
-        let Some((name, _)) = face.families.first() else {
+        // A leading dot marks macOS's private interface fonts.
+        let Some((name, _)) = face
+            .families
+            .first()
+            .filter(|(name, _)| !name.starts_with('.'))
+        else {
             continue;
         };
         let family = families
@@ -92,6 +113,45 @@ pub fn list(
         all_families.extend(families(library.system_fonts(), FontSource::System));
     }
     Ok(all_families)
+}
+
+impl From<CatalogFont> for FontFamily {
+    fn from(font: CatalogFont) -> Self {
+        Self {
+            family: font.family,
+            source: FontSource::Fontsource,
+            weights: font.weights.into_iter().collect(),
+            styles: font.styles.into_iter().collect(),
+            license: Some(font.license),
+        }
+    }
+}
+
+/// What `search` found, and why part of it may be missing.
+#[derive(Debug, Serialize)]
+pub struct SearchResults {
+    pub fonts: Vec<FontFamily>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+/// Local fonts first. Losing the network only costs the catalog, unless nothing else matched.
+pub fn search(
+    library: &FontLibrary,
+    assets: Option<&Assets>,
+    query: &str,
+) -> Result<SearchResults, Diagnostic> {
+    let lowercase_query = query.to_lowercase();
+    let mut fonts: Vec<FontFamily> = list(library, assets, None)?
+        .into_iter()
+        .filter(|font| font.family.to_lowercase().contains(&lowercase_query))
+        .collect();
+    let mut warnings = Vec::new();
+    match fontsource::search(query) {
+        Ok(catalog) => fonts.extend(catalog.into_iter().map(FontFamily::from)),
+        Err(error) if fonts.is_empty() => return Err(error),
+        Err(error) => warnings.push(error),
+    }
+    Ok(SearchResults { fonts, warnings })
 }
 
 /// The family a text layer naming `name` would use.

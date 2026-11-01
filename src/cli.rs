@@ -12,6 +12,7 @@ use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::fonts::{self, FontFamily, FontSource};
+use crate::fontsource;
 use crate::frames::{self, FrameFile};
 use crate::icons;
 use crate::inspect;
@@ -109,8 +110,12 @@ pub enum FontsCommand {
         #[arg(long, value_enum)]
         source: Option<FontSource>,
     },
+    /// Search project, system and Fontsource fonts
+    Search { query: String },
     /// Check whether a text layer can use a font
     Check { family: String },
+    /// Show a Fontsource font's weights, styles and license
+    Info { family: String },
 }
 
 #[derive(Subcommand)]
@@ -425,14 +430,11 @@ fn run_inspect(arguments: &Cli, frame: &str, layer: Option<&str>) -> Result<()> 
 
 fn print_font_family(font: &FontFamily) {
     let weights: Vec<String> = font.weights.iter().map(ToString::to_string).collect();
-    let styles: Vec<&str> = font.styles.iter().copied().collect();
+    let styles: Vec<&str> = font.styles.iter().map(String::as_str).collect();
     println!(
-        "{:<36} {:<8} {} [{}]",
+        "{:<36} {:<10} {} [{}]",
         font.family,
-        serde_json::to_value(font.source)
-            .expect("sources serialize to JSON")
-            .as_str()
-            .unwrap_or_default(),
+        font.source.name(),
         weights.join(" "),
         styles.join(" "),
     );
@@ -454,6 +456,30 @@ fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
                 println!("{:#}", json!({ "fonts": families }));
             } else {
                 families.iter().for_each(print_font_family);
+            }
+        }
+        FontsCommand::Search { query } => {
+            let results = fonts::search(&library, assets.as_ref(), query).map_err(Failure::from)?;
+            for warning in &results.warnings {
+                eprintln!("warning: {warning}");
+            }
+            if arguments.json {
+                println!("{:#}", json!(results));
+            } else {
+                results.fonts.iter().for_each(print_font_family);
+            }
+        }
+        FontsCommand::Info { family } => {
+            let details = fontsource::details(family).map_err(Failure::from)?;
+            if arguments.json {
+                println!("{:#}", json!(details));
+            } else {
+                let font = &details.font;
+                println!("{} ({}, {})", font.family, font.category, font.license);
+                println!("weights  {:?}", font.weights);
+                println!("styles   {}", font.styles.join(" "));
+                println!("subsets  {}", font.subsets.join(" "));
+                println!("source   {}", details.source);
             }
         }
         FontsCommand::Check { family } => {
