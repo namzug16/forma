@@ -7,8 +7,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use fontdb::{Database, FaceInfo, Style};
+use fontdb::{Database, FaceInfo, Source, Style};
 use rustybuzz::Face;
+use rustybuzz::ttf_parser::{self, Permissions, name_id};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{Assets, write_atomically, write_new_file};
@@ -20,6 +21,13 @@ use crate::text::FontLibrary;
 const FONT_DIRECTORY: &str = "fonts";
 const RECORD_FILE: &str = "font.json";
 const LICENSE_FILE: &str = "LICENSE";
+
+/// Where `fonts add` takes a font from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InstallOrigin {
+    Fontsource,
+    System,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -305,6 +313,124 @@ pub fn add_from_fontsource(
     })
 }
 
+/// The font's license statement, unless its embedding bits forbid copying it at all.
+fn license_if_copyable(
+    bytes: &[u8],
+    face_index: u32,
+    name: &str,
+) -> Result<Option<String>, Diagnostic> {
+    let face = ttf_parser::Face::parse(bytes, face_index)
+        .map_err(|_| Diagnostic::new("invalid_font", format!("{name} is not a usable font")))?;
+    if face.permissions() == Some(Permissions::Restricted) {
+        return Err(Diagnostic::new(
+            "font_copy_restricted",
+            format!("{name} forbids embedding, so it cannot be copied into a project"),
+        ));
+    }
+    let statement = |id: u16| {
+        face.names()
+            .into_iter()
+            .find(|name| name.name_id == id && name.is_unicode())
+            .and_then(|name| name.to_string())
+    };
+    Ok(statement(name_id::LICENSE).or_else(|| statement(name_id::COPYRIGHT_NOTICE)))
+}
+
+/// Text layers already use system fonts in place, so this is only for sharing a project, and
+/// a system font's license usually decides whether that is allowed. Permission bits cannot
+/// prove it is, hence the explicit acceptance on top of them.
+pub fn add_from_system(
+    library: &FontLibrary,
+    family: &str,
+    license_accepted: bool,
+    assets_directory: &Path,
+) -> Result<InstallReport, Diagnostic> {
+    let database = library.system_fonts();
+    let faces: Vec<&FaceInfo> = database
+        .faces()
+        .filter(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+        })
+        .collect();
+    if faces.is_empty() {
+        return Err(Diagnostic::new(
+            "font_not_found",
+            format!("no system font is named \"{family}\""),
+        ));
+    }
+    if !license_accepted {
+        return Err(Diagnostic::new(
+            "font_license_not_accepted",
+            format!(
+                "\"{family}\" already works without copying. To copy it, confirm its license \
+                 allows that and pass --accept-license"
+            ),
+        ));
+    }
+    let mut files: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
+    let mut license = None;
+    for face in faces {
+        let (Source::File(path) | Source::SharedFile(path, _)) = &face.source else {
+            continue;
+        };
+        if !files.contains_key(path) {
+            let bytes = fs::read(path).map_err(|error| file_error(path, error))?;
+            files.insert(path.clone(), bytes);
+        }
+        let name = path.display().to_string();
+        let statement = license_if_copyable(&files[path], face.index, &name)?;
+        license = license.or(statement);
+    }
+    let id = family
+        .trim()
+        .to_lowercase()
+        .replace(|character: char| !character.is_ascii_alphanumeric(), "-");
+    let directory = font_directory(assets_directory, &id);
+    let named_files = files
+        .iter()
+        .map(|(path, bytes)| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            (name.into_owned(), bytes.clone())
+        })
+        .collect::<Vec<_>>();
+    if named_files
+        .iter()
+        .any(|(name, _)| directory.join(name).exists())
+    {
+        return Err(already_installed(family));
+    }
+    let installed = named_files.iter().map(|(name, _)| name.clone()).collect();
+    let record = InstalledFont {
+        family: family.to_owned(),
+        source: FontSource::System.name().to_owned(),
+        license: license.clone(),
+        license_file: None,
+        version: None,
+        upstream: files.keys().next().map(|path| path.display().to_string()),
+        files: BTreeSet::new(),
+    };
+    install_files(&directory, record, &named_files)?;
+    let warnings = license
+        .iter()
+        .map(|statement| {
+            Diagnostic::new(
+                "font_license_review",
+                format!("copied under this statement: {statement}"),
+            )
+        })
+        .collect();
+    Ok(InstallReport {
+        family: family.to_owned(),
+        directory,
+        installed,
+        skipped: Vec::new(),
+        license,
+        warnings,
+    })
+}
+
 fn record_for(details: &FontDetails, license_file: Option<String>) -> InstalledFont {
     InstalledFont {
         family: details.font.family.clone(),
@@ -449,6 +575,42 @@ mod tests {
                 .code,
             "invalid_font"
         );
+    }
+
+    #[test]
+    fn a_font_that_forbids_embedding_is_not_copied() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/Tuffy.ttf");
+        let mut bytes = fs::read(fixture).unwrap();
+        assert!(license_if_copyable(&bytes, 0, "Tuffy").is_ok());
+
+        // fsType sits 8 bytes into the OS/2 table; 2 means restricted license embedding.
+        let directory = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let table_record = (0..directory)
+            .map(|index| 12 + index * 16)
+            .find(|record| &bytes[*record..*record + 4] == b"OS/2")
+            .unwrap();
+        let offset_bytes = bytes[table_record + 8..table_record + 12]
+            .try_into()
+            .unwrap();
+        let table = u32::from_be_bytes(offset_bytes) as usize;
+        bytes[table + 8..table + 10].copy_from_slice(&2u16.to_be_bytes());
+
+        let error = license_if_copyable(&bytes, 0, "Tuffy").unwrap_err();
+        assert_eq!(error.code, "font_copy_restricted");
+    }
+
+    #[test]
+    fn copying_a_system_font_needs_explicit_acceptance() {
+        let assets = tempfile::tempdir().unwrap();
+        let library = FontLibrary::default();
+        let Some(family) = families(library.system_fonts(), FontSource::System).pop() else {
+            return; // A machine without fonts has nothing to protect.
+        };
+
+        let error = add_from_system(&library, &family.family, false, assets.path()).unwrap_err();
+
+        assert_eq!(error.code, "font_license_not_accepted");
+        assert_eq!(fs::read_dir(assets.path()).unwrap().count(), 0);
     }
 
     #[test]

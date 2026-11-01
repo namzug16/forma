@@ -68,6 +68,68 @@ fn add_project_files(project: &Path) {
 }
 
 #[test]
+fn installed_icons_and_fonts_render_in_any_frame_from_local_files() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    assert!(forma(&root, &["init"]).status.success());
+    let project = root.join("forma");
+
+    // The layout `forma icons add` and `forma fonts add` leave behind.
+    let icons = project.join("assets/icons/lucide");
+    fs::create_dir_all(&icons).unwrap();
+    fs::write(
+        icons.join("star.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M2 2h20v20z"/></svg>"#,
+    )
+    .unwrap();
+    let font_directory = project.join("assets/fonts/inter");
+    fs::create_dir_all(&font_directory).unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for subset in ["latin", "cyrillic"] {
+        let name = format!("{subset}-400-normal.ttf");
+        fs::copy(
+            fixtures.join(format!("Inter-{name}")),
+            font_directory.join(name),
+        )
+        .unwrap();
+    }
+
+    for frame in ["one", "two"] {
+        let source = format!(
+            r##"{{ "version": 1, "id": "{frame}", "width": 200, "height": 100, "children": [
+                {{ "id": "star", "type": "svg", "src": "icons/lucide/star.svg", "width": 48,
+                   "height": 48, "color": "#FF0000" }},
+                {{ "id": "title", "type": "text", "text": "Hello Привет", "y": 50,
+                   "font": {{ "family": "Inter", "size": 20 }},
+                   "fill": {{ "color": "#000000" }} }} ] }}"##
+        );
+        fs::write(project.join(format!("frames/{frame}.json")), source).unwrap();
+        let render = forma(&root, &["render", frame, "--json"]);
+        assert!(
+            render.status.success(),
+            "{}",
+            String::from_utf8_lossy(&render.stderr)
+        );
+    }
+
+    let report = json_output(&forma(
+        &root,
+        &["inspect", "one", "--layer", "title", "--json"],
+    ));
+    let font_source = report["layers"][0]["fontSource"].as_str().unwrap();
+    assert!(font_source.contains("assets/fonts/inter"), "{font_source}");
+
+    let found = json_output(&forma(&root, &["fonts", "check", "Inter", "--json"]));
+    assert_eq!(found["font"]["source"], "project");
+    let missing = forma(
+        &root,
+        &["fonts", "check", "No Such Family Anywhere", "--json"],
+    );
+    assert!(!missing.status.success());
+    assert_eq!(json_output(&missing)["errors"][0]["code"], "font_not_found");
+}
+
+#[test]
 fn a_frame_goes_from_init_through_validate_render_and_inspect() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();

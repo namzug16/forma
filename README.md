@@ -34,6 +34,7 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 | `forma fonts list [--source project\|system]` | List families with their weights and styles. |
 | `forma fonts search QUERY` | Search project, system and Fontsource fonts. |
 | `forma fonts add FAMILY [--weight 400,700] [--style italic] [--subset latin]` | Install a Fontsource font. |
+| `forma fonts add FAMILY --from system --accept-license` | Copy a system font's files into the project. |
 | `forma fonts info FAMILY` | Show a font's weights, styles, subsets and license. |
 | `forma fonts check FAMILY` | Report the font a text layer would use. Exits nonzero if missing. |
 | `forma icons search QUERY` | Search Lucide icons. |
@@ -116,6 +117,10 @@ so a font split by character subset works as one font, even within a line.
 recording the source. It installs every weight, style and named subset by default, so narrow large
 fonts with `--weight` or `--subset`. Adding more of a font later keeps what is there; rendering
 never downloads anything.
+
+System fonts work in text layers without being copied. `--from system` is only for sharing a
+project: it needs `--accept-license`, because a system font's license usually decides whether
+copying is allowed, and it refuses fonts whose embedding bits are restricted.
 
 **Images** accept PNG, JPEG and WebP with `fit` of `cover` (default), `contain` or `fill`.
 

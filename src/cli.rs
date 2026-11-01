@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
-use crate::fonts::{self, FontFamily, FontInfo, FontSource, InstallReport};
+use crate::fonts::{self, FontFamily, FontInfo, FontSource, InstallOrigin, InstallReport};
 use crate::fontsource::VariantSelection;
 use crate::frames::{self, FrameFile};
 use crate::icons;
@@ -122,6 +122,12 @@ pub enum FontsCommand {
         /// Character subsets to install, comma separated (default: all named subsets)
         #[arg(long, value_delimiter = ',')]
         subset: Vec<String>,
+        /// Where to take the font from
+        #[arg(long, value_enum, default_value = "fontsource")]
+        from: InstallOrigin,
+        /// Confirm the license allows copying a system font into this project
+        #[arg(long)]
+        accept_license: bool,
     },
     /// Search project, system and Fontsource fonts
     Search { query: String },
@@ -528,6 +534,8 @@ fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
             weight,
             style,
             subset,
+            from,
+            accept_license,
         } => {
             let selection = VariantSelection {
                 weights: weight.clone(),
@@ -535,8 +543,21 @@ fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
                 subsets: subset.clone(),
             };
             let assets_directory = open_project(arguments)?.assets_directory();
-            let report = fonts::add_from_fontsource(family, &selection, &assets_directory)
-                .map_err(Failure::from)?;
+            let report = match from {
+                InstallOrigin::Fontsource => {
+                    fonts::add_from_fontsource(family, &selection, &assets_directory)
+                }
+                InstallOrigin::System
+                    if weight.is_empty() && style.is_empty() && subset.is_empty() =>
+                {
+                    fonts::add_from_system(&library, family, *accept_license, &assets_directory)
+                }
+                InstallOrigin::System => Err(Diagnostic::new(
+                    "invalid_arguments",
+                    "system fonts copy whole files; --weight, --style and --subset do not apply",
+                )),
+            }
+            .map_err(Failure::from)?;
             print_font_install(&report, arguments.json);
         }
         FontsCommand::Info { family } => {
