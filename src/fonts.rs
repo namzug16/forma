@@ -2,15 +2,24 @@
 //! report is what a text layer will find.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use fontdb::{Database, FaceInfo, Style};
-use serde::Serialize;
+use rustybuzz::Face;
+use serde::{Deserialize, Serialize};
 
-use crate::assets::Assets;
+use crate::assets::{Assets, write_atomically, write_new_file};
 use crate::diagnostics::Diagnostic;
-use crate::fontsource::{self, CatalogFont};
+use crate::fontsource::{self, CatalogFont, FontDetails, VariantSelection};
 use crate::text::FontLibrary;
+
+/// Relative to the assets directory.
+const FONT_DIRECTORY: &str = "fonts";
+const RECORD_FILE: &str = "font.json";
+const LICENSE_FILE: &str = "LICENSE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -154,6 +163,199 @@ pub fn search(
     Ok(SearchResults { fonts, warnings })
 }
 
+/// Where an installed font came from, kept beside its files.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstalledFont {
+    pub family: String,
+    pub source: String,
+    pub license: Option<String>,
+    pub license_file: Option<String>,
+    pub version: Option<String>,
+    pub upstream: Option<String>,
+    pub files: BTreeSet<String>,
+}
+
+fn font_directory(assets_directory: &Path, id: &str) -> PathBuf {
+    assets_directory.join(FONT_DIRECTORY).join(id)
+}
+
+fn file_error(path: &Path, error: std::io::Error) -> Diagnostic {
+    Diagnostic::new("asset_io_error", format!("{}: {error}", path.display()))
+}
+
+fn read_record(directory: &Path) -> Result<Option<InstalledFont>, Diagnostic> {
+    let path = directory.join(RECORD_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(file_error(&path, error)),
+    };
+    serde_json::from_str(&text).map(Some).map_err(|error| {
+        Diagnostic::new("invalid_manifest", format!("{}: {error}", path.display()))
+    })
+}
+
+fn already_installed(family: &str) -> Diagnostic {
+    Diagnostic::new(
+        "font_already_installed",
+        format!("\"{family}\" is already installed; the existing files were kept"),
+    )
+}
+
+fn validate_font(bytes: &[u8], name: &str) -> Result<(), Diagnostic> {
+    match Face::from_slice(bytes, 0) {
+        Some(_) => Ok(()),
+        None => Err(Diagnostic::new(
+            "invalid_font",
+            format!("{name} is not a usable font"),
+        )),
+    }
+}
+
+/// Writes validated files and merges them into the record, so adding a weight later keeps the
+/// earlier ones. Existing files are left alone.
+fn install_files(
+    directory: &Path,
+    mut record: InstalledFont,
+    files: &[(String, Vec<u8>)],
+) -> Result<(), Diagnostic> {
+    let existing = read_record(directory)?;
+    for (name, bytes) in files {
+        let path = directory.join(name);
+        write_new_file(&path, bytes).map_err(|error| file_error(&path, error))?;
+    }
+    record
+        .files
+        .extend(files.iter().map(|(name, _)| name.clone()));
+    if let Some(existing) = existing {
+        record.files.extend(existing.files);
+    }
+    let path = directory.join(RECORD_FILE);
+    let text = serde_json::to_string_pretty(&record).expect("records serialize to JSON");
+    write_atomically(&path, format!("{text}\n").as_bytes())
+        .map_err(|error| file_error(&path, error))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallReport {
+    pub family: String,
+    pub directory: PathBuf,
+    pub installed: Vec<String>,
+    pub skipped: Vec<String>,
+    pub license: Option<String>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+pub fn add_from_fontsource(
+    family: &str,
+    selection: &VariantSelection,
+    assets_directory: &Path,
+) -> Result<InstallReport, Diagnostic> {
+    let details = fontsource::details(family)?;
+    let directory = font_directory(assets_directory, &details.font.id);
+    let (skipped, missing): (Vec<_>, Vec<_>) = details
+        .files_for(selection)?
+        .into_iter()
+        .partition(|file| directory.join(&file.file_name).exists());
+    if missing.is_empty() {
+        return Err(already_installed(&details.font.family));
+    }
+    let mut downloads = Vec::new();
+    for file in &missing {
+        let bytes = crate::net::fetch(&file.url, &[])?.ok_or_else(|| {
+            Diagnostic::new("network_error", format!("{} does not exist", file.url))
+        })?;
+        validate_font(&bytes, &file.file_name)?;
+        downloads.push((file.file_name.clone(), bytes));
+    }
+    let license_text = fontsource::license_text(&details.font.id)?;
+    let mut warnings = Vec::new();
+    if details.font.variable {
+        warnings.push(Diagnostic::new(
+            "font_installed_static",
+            "installed static weights; Fontsource's variable files are WOFF2, which Forma cannot read",
+        ));
+    }
+    if license_text.is_none() {
+        warnings.push(Diagnostic::new(
+            "font_license_missing",
+            format!(
+                "no license text was published; recorded {}",
+                details.font.license
+            ),
+        ));
+    }
+    let license_file = license_text.as_ref().map(|_| LICENSE_FILE.to_owned());
+    if let Some(text) = &license_text {
+        let path = directory.join(LICENSE_FILE);
+        write_new_file(&path, text).map_err(|error| file_error(&path, error))?;
+    }
+    let installed = downloads.iter().map(|(name, _)| name.clone()).collect();
+    let record = record_for(&details, license_file);
+    install_files(&directory, record, &downloads)?;
+    Ok(InstallReport {
+        family: details.font.family,
+        directory,
+        installed,
+        skipped: skipped.into_iter().map(|file| file.file_name).collect(),
+        license: Some(details.font.license),
+        warnings,
+    })
+}
+
+fn record_for(details: &FontDetails, license_file: Option<String>) -> InstalledFont {
+    InstalledFont {
+        family: details.font.family.clone(),
+        source: FontSource::Fontsource.name().to_owned(),
+        license: Some(details.font.license.clone()),
+        license_file,
+        version: Some(details.version.clone()),
+        upstream: Some(details.source.clone()),
+        files: BTreeSet::new(),
+    }
+}
+
+/// Everything known about a font, from whichever places still answer.
+#[derive(Debug, Serialize)]
+pub struct FontInfo {
+    pub catalog: Option<FontDetails>,
+    pub installed: Option<InstalledFont>,
+    pub available: Option<FontFamily>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+/// Works offline for anything local; only a font found nowhere is an error.
+pub fn info(
+    library: &FontLibrary,
+    assets: Option<&Assets>,
+    assets_directory: Option<&Path>,
+    family: &str,
+) -> Result<FontInfo, Diagnostic> {
+    let installed = match (assets_directory, fontsource::font_id(family)) {
+        (Some(directory), Ok(id)) => read_record(&font_directory(directory, &id))?,
+        _ => None,
+    };
+    let available = check(library, assets, family).ok();
+    let mut warnings = Vec::new();
+    let catalog = match fontsource::details(family) {
+        Ok(details) => Some(details),
+        Err(error) if installed.is_none() && available.is_none() => return Err(error),
+        Err(error) if error.code == "font_not_found" => None,
+        Err(error) => {
+            warnings.push(error);
+            None
+        }
+    };
+    Ok(FontInfo {
+        catalog,
+        installed,
+        available,
+        warnings,
+    })
+}
+
 /// The family a text layer naming `name` would use.
 pub fn check(
     library: &FontLibrary,
@@ -204,6 +406,49 @@ mod tests {
 
         let missing = check(&library, Some(&assets), "No Such Family Anywhere").unwrap_err();
         assert_eq!(missing.code, "font_not_found");
+    }
+
+    fn record(family: &str) -> InstalledFont {
+        InstalledFont {
+            family: family.to_owned(),
+            source: "fontsource".to_owned(),
+            license: Some("OFL-1.1".to_owned()),
+            license_file: None,
+            version: None,
+            upstream: None,
+            files: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn adding_files_later_keeps_earlier_ones_and_never_replaces_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let font = directory.path().join("inter");
+
+        let first = [("latin-400-normal.ttf".to_owned(), b"first".to_vec())];
+        install_files(&font, record("Inter"), &first).unwrap();
+        let second = [
+            ("latin-400-normal.ttf".to_owned(), b"changed".to_vec()),
+            ("latin-700-normal.ttf".to_owned(), b"bold".to_vec()),
+        ];
+        install_files(&font, record("Inter"), &second).unwrap();
+
+        let saved = read_record(&font).unwrap().unwrap();
+        assert_eq!(saved.files.len(), 2);
+        assert_eq!(
+            fs::read(font.join("latin-400-normal.ttf")).unwrap(),
+            b"first"
+        );
+    }
+
+    #[test]
+    fn a_download_that_is_not_a_font_is_rejected() {
+        assert_eq!(
+            validate_font(b"<html>gateway error", "x.ttf")
+                .unwrap_err()
+                .code,
+            "invalid_font"
+        );
     }
 
     #[test]

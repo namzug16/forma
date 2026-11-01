@@ -11,8 +11,8 @@ use serde_json::json;
 use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
-use crate::fonts::{self, FontFamily, FontSource};
-use crate::fontsource;
+use crate::fonts::{self, FontFamily, FontInfo, FontSource, InstallReport};
+use crate::fontsource::VariantSelection;
 use crate::frames::{self, FrameFile};
 use crate::icons;
 use crate::inspect;
@@ -110,11 +110,24 @@ pub enum FontsCommand {
         #[arg(long, value_enum)]
         source: Option<FontSource>,
     },
+    /// Install a font into the project's assets
+    Add {
+        family: String,
+        /// Weights to install, comma separated (default: all)
+        #[arg(long, value_delimiter = ',')]
+        weight: Vec<u16>,
+        /// Styles to install, comma separated (default: all)
+        #[arg(long, value_delimiter = ',')]
+        style: Vec<String>,
+        /// Character subsets to install, comma separated (default: all named subsets)
+        #[arg(long, value_delimiter = ',')]
+        subset: Vec<String>,
+    },
     /// Search project, system and Fontsource fonts
     Search { query: String },
     /// Check whether a text layer can use a font
     Check { family: String },
-    /// Show a Fontsource font's weights, styles and license
+    /// Show a font's weights, styles and license
     Info { family: String },
 }
 
@@ -440,6 +453,47 @@ fn print_font_family(font: &FontFamily) {
     );
 }
 
+fn print_font_install(report: &InstallReport, emit_json: bool) {
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if emit_json {
+        println!("{:#}", json!({ "success": true, "font": report }));
+        return;
+    }
+    println!(
+        "installed {} files in {} ({} already present)",
+        report.installed.len(),
+        report.directory.display(),
+        report.skipped.len(),
+    );
+    println!("use it as \"family\": \"{}\"", report.family);
+}
+
+fn print_font_info(info: &FontInfo, emit_json: bool) {
+    for warning in &info.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if emit_json {
+        println!("{:#}", json!(info));
+        return;
+    }
+    if let Some(details) = &info.catalog {
+        let font = &details.font;
+        println!("{} ({}, {})", font.family, font.category, font.license);
+        println!("weights  {:?}", font.weights);
+        println!("styles   {}", font.styles.join(" "));
+        println!("subsets  {}", font.subsets.join(" "));
+        println!("source   {}", details.source);
+    }
+    if let Some(font) = &info.available {
+        print_font_family(font);
+    }
+    if let Some(installed) = &info.installed {
+        println!("installed {} files", installed.files.len());
+    }
+}
+
 fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
     let assets = open_project(arguments)
         .ok()
@@ -469,18 +523,34 @@ fn run_fonts(arguments: &Cli, command: &FontsCommand) -> Result<()> {
                 results.fonts.iter().for_each(print_font_family);
             }
         }
+        FontsCommand::Add {
+            family,
+            weight,
+            style,
+            subset,
+        } => {
+            let selection = VariantSelection {
+                weights: weight.clone(),
+                styles: style.clone(),
+                subsets: subset.clone(),
+            };
+            let assets_directory = open_project(arguments)?.assets_directory();
+            let report = fonts::add_from_fontsource(family, &selection, &assets_directory)
+                .map_err(Failure::from)?;
+            print_font_install(&report, arguments.json);
+        }
         FontsCommand::Info { family } => {
-            let details = fontsource::details(family).map_err(Failure::from)?;
-            if arguments.json {
-                println!("{:#}", json!(details));
-            } else {
-                let font = &details.font;
-                println!("{} ({}, {})", font.family, font.category, font.license);
-                println!("weights  {:?}", font.weights);
-                println!("styles   {}", font.styles.join(" "));
-                println!("subsets  {}", font.subsets.join(" "));
-                println!("source   {}", details.source);
-            }
+            let assets_directory = open_project(arguments)
+                .ok()
+                .map(|project| project.assets_directory());
+            let info = fonts::info(
+                &library,
+                assets.as_ref(),
+                assets_directory.as_deref(),
+                family,
+            )
+            .map_err(Failure::from)?;
+            print_font_info(&info, arguments.json);
         }
         FontsCommand::Check { family } => {
             let found = fonts::check(&library, assets.as_ref(), family).map_err(Failure::from)?;

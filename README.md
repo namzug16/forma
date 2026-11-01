@@ -33,7 +33,8 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 | `forma inspect FRAME [--layer ID]` | Report hierarchy, transforms, bounds and resolved values. |
 | `forma fonts list [--source project\|system]` | List families with their weights and styles. |
 | `forma fonts search QUERY` | Search project, system and Fontsource fonts. |
-| `forma fonts info FAMILY` | Show a Fontsource font's weights, styles, subsets and license. |
+| `forma fonts add FAMILY [--weight 400,700] [--style italic] [--subset latin]` | Install a Fontsource font. |
+| `forma fonts info FAMILY` | Show a font's weights, styles, subsets and license. |
 | `forma fonts check FAMILY` | Report the font a text layer would use. Exits nonzero if missing. |
 | `forma icons search QUERY` | Search Lucide icons. |
 | `forma icons add NAME` | Download an icon. Never overwrites an existing file. |
@@ -110,6 +111,11 @@ machine. A missing font or glyph is an error unless
 `fallbacks` lists families to try. One family is used per text node, and using a fallback or a
 different weight is reported as a warning. Files of a family with the same weight and style combine,
 so a font split by character subset works as one font, even within a line.
+
+`forma fonts add` puts static TTFs in `assets/fonts/ID/` with the license text and a `font.json`
+recording the source. It installs every weight, style and named subset by default, so narrow large
+fonts with `--weight` or `--subset`. Adding more of a font later keeps what is there; rendering
+never downloads anything.
 
 **Images** accept PNG, JPEG and WebP with `fit` of `cover` (default), `contain` or `fill`.
 
