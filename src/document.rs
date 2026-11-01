@@ -244,6 +244,8 @@ pub struct GroupProperties {
 pub struct GroupNode {
     #[schemars(flatten)]
     pub properties: GroupProperties,
+    /// Drawn in the group's coordinates; its alpha is multiplied into the composited group.
+    pub mask: Option<Box<Node>>,
     pub children: Vec<Node>,
 }
 
@@ -413,7 +415,11 @@ impl Parser {
         let layer = layer.as_deref();
         let node_type = properties.remove("type");
 
+        let is_group = node_type.as_ref().and_then(Value::as_str) == Some("group");
         for feature in FUTURE_PROPERTIES {
+            if is_group && feature == "mask" {
+                continue;
+            }
             if properties.remove(feature).is_some() {
                 self.push(
                     Diagnostic::new(
@@ -505,10 +511,18 @@ impl Parser {
         layer: Option<&str>,
     ) -> Option<NodeKind> {
         let children = properties.remove("children");
+        let mask = properties.remove("mask");
         let group_properties = self.deserialize(properties, path, layer);
+        let parsed_mask =
+            mask.map(|mask| self.parse_node(mask, &format!("{path}.mask"), depth + 1));
         let children = self.parse_children(children, &format!("{path}.children"), depth + 1);
+        let mask = match parsed_mask {
+            Some(parsed) => Some(Box::new(parsed?)),
+            None => None,
+        };
         Some(NodeKind::Group(GroupNode {
             properties: group_properties?,
+            mask,
             children,
         }))
     }

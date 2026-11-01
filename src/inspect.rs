@@ -146,9 +146,14 @@ fn describe_node(
             insert(details, "type", json!("svg"));
             insert(details, "source", json!(source));
         }
-        SceneKind::Group { children, clip } => {
+        SceneKind::Group {
+            children,
+            clip,
+            mask,
+        } => {
             insert(details, "type", json!("group"));
             insert(details, "clip", json!(clip));
+            insert(details, "mask", json!(mask.as_ref().map(|mask| &mask.id)));
             let children = describe_nodes(
                 children,
                 layout.world,

@@ -195,6 +195,7 @@ pub enum SceneKind {
     Group {
         children: Vec<SceneNode>,
         clip: bool,
+        mask: Option<Box<SceneNode>>,
     },
 }
 
@@ -323,7 +324,7 @@ fn warn_about_clipped_nodes(
                     .on_layer(node.id.clone()),
             );
         }
-        if let SceneKind::Group { children, clip } = &node.kind {
+        if let SceneKind::Group { children, clip, .. } = &node.kind {
             let children_area = layout.children_visible_area(*clip, visible_area);
             warn_about_clipped_nodes(children, layout.world, children_area, warnings);
         }
@@ -487,6 +488,11 @@ impl SceneBuilder<'_> {
             }
             NodeKind::Group(group) => {
                 let children = self.build_nodes(&group.children, &format!("{path}.children"));
+                let mask = group
+                    .mask
+                    .as_deref()
+                    .and_then(|mask| self.build_node(mask, &format!("{path}.mask")))
+                    .map(Box::new);
                 let width = group
                     .properties
                     .width
@@ -518,7 +524,11 @@ impl SceneBuilder<'_> {
                     None => derived_group_bounds(&children),
                 };
                 (
-                    SceneKind::Group { children, clip },
+                    SceneKind::Group {
+                        children,
+                        clip,
+                        mask,
+                    },
                     bounds,
                     explicit_size.is_some(),
                 )

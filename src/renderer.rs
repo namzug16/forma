@@ -6,9 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tiny_skia::{
     Color as SkiaColor, FillRule, FilterQuality, GradientStop, IntSize, LineCap as SkiaLineCap,
-    LineJoin as SkiaLineJoin, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pattern,
-    Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode, Stroke as SkiaStroke,
-    StrokeDash, Transform,
+    LineJoin as SkiaLineJoin, LinearGradient, Mask, MaskType, Paint as SkiaPaint, PathBuilder,
+    Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode,
+    Stroke as SkiaStroke, StrokeDash, Transform,
 };
 
 use usvg::Tree;
@@ -123,8 +123,11 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
         return;
     }
     let world = node.transform.then(parent);
-    let clip = matches!(node.kind, SceneKind::Group { clip: true, .. });
-    if node.opacity >= 1.0 && !clip {
+    let (clip, group_mask) = match &node.kind {
+        SceneKind::Group { clip, mask, .. } => (*clip, mask.as_deref()),
+        _ => (false, None),
+    };
+    if node.opacity >= 1.0 && !clip && group_mask.is_none() {
         draw_content(node, canvas, world);
         return;
     }
@@ -133,6 +136,9 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
     let mut layer = Pixmap::new(canvas.width(), canvas.height())
         .expect("a layer has the size of an existing canvas");
     draw_content(node, &mut layer, world);
+    if let Some(group_mask) = group_mask {
+        layer.apply_mask(&alpha_mask(group_mask, canvas, world));
+    }
     let mask = clip
         .then(|| clip_mask(canvas, node.bounds, world))
         .flatten();
@@ -151,6 +157,13 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
         Transform::identity(),
         mask.as_ref(),
     );
+}
+
+fn alpha_mask(mask_node: &SceneNode, canvas: &Pixmap, world: Affine) -> Mask {
+    let mut mask_layer = Pixmap::new(canvas.width(), canvas.height())
+        .expect("a layer has the size of an existing canvas");
+    draw_node(mask_node, &mut mask_layer, world);
+    Mask::from_pixmap(mask_layer.as_ref(), MaskType::Alpha)
 }
 
 /// `None` for an empty clip, which hides everything inside it.
@@ -777,6 +790,37 @@ mod tests {
         assert_eq!(pixel(&canvas, 5, 50), EMPTY);
         assert_eq!(pixel(&canvas, 15, 50), RED);
         assert_eq!(pixel(&canvas, 25, 50), EMPTY);
+    }
+
+    #[test]
+    fn a_mask_moves_with_its_group_and_multiplies_its_alpha() {
+        let frame = frame_with(
+            r##"{ "id": "group", "type": "group", "x": 20, "y": 20,
+                  "mask": { "id": "circle", "type": "ellipse", "width": 40, "height": 40,
+                            "opacity": 0.5, "fill": { "color": "#FFFFFF" } },
+                  "children": [
+                    { "id": "flood", "type": "rect", "x": -20, "y": -20,
+                      "width": 100, "height": 100, "fill": { "color": "#FF0000" } } ] }"##,
+        );
+        let canvas = render_json(&frame, "{}");
+
+        assert_near(pixel(&canvas, 40, 40), [255, 0, 0, 127]);
+        // Inside the circle's box, outside the circle.
+        assert_eq!(pixel(&canvas, 21, 21), EMPTY);
+        assert_eq!(pixel(&canvas, 70, 40), EMPTY);
+    }
+
+    #[test]
+    fn only_groups_accept_a_mask() {
+        let frame = frame_with(
+            r#"{ "id": "r", "type": "rect", "width": 1, "height": 1,
+                 "mask": { "id": "m", "type": "rect", "width": 1, "height": 1 } }"#,
+        );
+
+        assert_eq!(
+            parse_frame(&frame).unwrap_err().0[0].code,
+            "unsupported_feature"
+        );
     }
 
     #[test]
