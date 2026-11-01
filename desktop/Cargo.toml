@@ -1,0 +1,12 @@
+[package]
+name = "forma-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Read-only macOS viewer for Forma projects"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+forma = { path = ".." }
+gpui-kit = "=0.8.1"

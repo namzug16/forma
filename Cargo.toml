@@ -5,6 +5,9 @@ edition = "2024"
 description = "Agent-first, headless 2D design engine"
 license = "MIT"
 
+[workspace]
+members = ["desktop"]
+
 [dependencies]
 anyhow = "1.0.104"
 arboard = "3.7.0"
