@@ -1,23 +1,8 @@
-mod assets;
-mod cli;
-mod diagnostics;
-mod document;
-mod fonts;
-mod fontsource;
-mod frames;
-mod icons;
-mod inspect;
-mod net;
-mod project;
-mod renderer;
-mod scene;
-mod text;
-mod tokens;
-
 use std::process::ExitCode;
 
 use clap::Parser;
-use diagnostics::{Diagnostic, Failure};
+use forma::cli;
+use forma::diagnostics::{Diagnostic, Failure};
 
 fn main() -> ExitCode {
     let arguments = cli::Cli::parse();
