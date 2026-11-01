@@ -63,8 +63,8 @@ pub enum Command {
         /// Multiplies raster dimensions, not logical coordinates
         #[arg(long)]
         scale: Option<f64>,
-        /// Also copy the rendered bitmap to the clipboard
-        #[arg(long, conflicts_with = "all")]
+        /// Copy the rendered bitmap to the clipboard instead of writing a file
+        #[arg(long, conflicts_with_all = ["all", "output"])]
         clipboard: bool,
     },
     /// Check frames without rendering
@@ -312,7 +312,8 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
 struct RenderResult {
     success: bool,
     frame: String,
-    output: PathBuf,
+    /// `None` when the render went to the clipboard.
+    output: Option<PathBuf>,
     width: u32,
     height: u32,
     format: &'static str,
@@ -328,28 +329,29 @@ fn render_frame(
     let scene = frames::load_scene(file, resources)?;
     let scale = options.scale.unwrap_or(project.config.render.scale);
     let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;
-    let output = match options.output {
-        Some(path) => absolute_output_path(path)?,
-        None => project.default_output_path(file),
-    };
-    if output == file.path || project.is_source_path(&output) {
-        return Err(Failure::from(Diagnostic::new(
-            "output_overwrites_source",
-            format!("refusing to write over project source {}", output.display()),
-        ))
-        .into());
-    }
-    renderer::write_png(&canvas, &output)?;
-    let mut warnings = scene.warnings;
-    if options.copy_to_clipboard {
-        // The file is already saved, so a missing clipboard must not fail the render.
-        if let Err(error) = renderer::copy_to_clipboard(&canvas) {
-            warnings.push(Diagnostic::new(
+    let output = if options.copy_to_clipboard {
+        renderer::copy_to_clipboard(&canvas).map_err(|error| {
+            Failure::from(Diagnostic::new(
                 "clipboard_unavailable",
-                format!("the render was saved but not copied: {error}"),
-            ));
+                format!("cannot copy the render to the clipboard: {error}"),
+            ))
+        })?;
+        None
+    } else {
+        let output = match options.output {
+            Some(path) => absolute_output_path(path)?,
+            None => project.default_output_path(file),
+        };
+        if output == file.path || project.is_source_path(&output) {
+            return Err(Failure::from(Diagnostic::new(
+                "output_overwrites_source",
+                format!("refusing to write over project source {}", output.display()),
+            ))
+            .into());
         }
-    }
+        renderer::write_png(&canvas, &output)?;
+        Some(output)
+    };
     Ok(RenderResult {
         success: true,
         frame: scene.id,
@@ -357,7 +359,7 @@ fn render_frame(
         width: canvas.width(),
         height: canvas.height(),
         format: "png",
-        warnings,
+        warnings: scene.warnings,
     })
 }
 
@@ -386,12 +388,11 @@ fn print_render_result(result: &RenderResult, emit_json: bool) {
     if emit_json {
         println!("{:#}", json!(result));
     } else {
-        println!(
-            "{} ({}×{})",
-            result.output.display(),
-            result.width,
-            result.height
+        let destination = result.output.as_ref().map_or_else(
+            || "clipboard".to_owned(),
+            |output| output.display().to_string(),
         );
+        println!("{destination} ({}×{})", result.width, result.height);
     }
 }
 

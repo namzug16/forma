@@ -383,6 +383,17 @@ fn a_frame_goes_from_init_through_validate_render_and_inspect() {
     assert!(!overwrite.status.success());
     assert_eq!(fs::read(&tokens_target).unwrap(), tokens_before);
 
+    // The clipboard replaces the file, whether or not this machine has a clipboard.
+    fs::remove_dir_all(project.join("output")).unwrap();
+    forma(&root, &["render", "post", "--clipboard"]);
+    assert!(!project.join("output").exists());
+    let both_destinations = forma(
+        &root,
+        &["render", "post", "--clipboard", "--output", "both.png"],
+    );
+    assert!(!both_destinations.status.success());
+    assert!(!root.join("both.png").exists());
+
     // Inspection reports resolved values and the rotated overflow.
     let report = json_output(&forma(&root, &["inspect", "post", "--json"]));
     let layers = report["layers"].as_array().unwrap();
