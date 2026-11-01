@@ -1864,10 +1864,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forma",
+ "futures",
  "gpui-kit",
  "image",
+ "notify",
  "serde_json",
  "smallvec",
+ "tempfile",
  "tiny-skia 0.12.0",
 ]
 

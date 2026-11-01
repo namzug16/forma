@@ -2,6 +2,7 @@
 
 mod frame_render;
 mod frame_tree;
+mod project_watch;
 mod viewer;
 mod viewport;
 

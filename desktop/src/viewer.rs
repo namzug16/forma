@@ -4,12 +4,14 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
 use forma::diagnostics::Failure;
 use forma::frames::{self, FrameFile};
 use forma::project::Project;
+use futures::StreamExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
@@ -18,11 +20,16 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use notify::{Event, RecommendedWatcher};
 use serde_json::Value;
 
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
+use crate::project_watch::{self, WatchedPaths};
 use crate::viewport::Viewport;
+
+/// Long enough to gather a burst of writes into one render without feeling late.
+const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Scroll distance that doubles the zoom is about 70 pixels.
 const ZOOM_PER_SCROLL_PIXEL: f32 = 0.01;
@@ -41,6 +48,10 @@ pub struct Viewer {
     project: Option<Arc<Project>>,
     /// Why the project cannot be shown; agents fix these, the viewer only reports them.
     project_failure: Vec<String>,
+    /// Dropping these stops the change events.
+    project_watch: Option<(RecommendedWatcher, WatchedPaths, Task<()>)>,
+    /// Set when live updates stop, because what is on screen can then go stale.
+    watch_failure: Option<String>,
     frames: Vec<FrameFile>,
     tree_state: Entity<TreeState>,
     collapsed_folders: HashSet<SharedString>,
@@ -79,6 +90,8 @@ impl Viewer {
         Self {
             project: None,
             project_failure: Vec::new(),
+            project_watch: None,
+            watch_failure: None,
             frames: Vec::new(),
             tree_state,
             collapsed_folders: HashSet::new(),
@@ -161,28 +174,118 @@ impl Viewer {
 
     fn open_project(&mut self, picked_directory: &Path, cx: &mut Context<Self>) {
         match Project::locate(None, picked_directory) {
-            Ok(project) => {
-                self.project = Some(Arc::new(project));
-                self.project_failure.clear();
-                self.rebuild_tree(cx);
-            }
+            Ok(project) => self.adopt_project(project, cx),
             Err(error) => self.project_failure = failure_messages(&error),
         }
         cx.notify();
     }
 
-    /// Re-reads which frames exist, keeping the tree's highlight and folder state.
-    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+    fn adopt_project(&mut self, project: Project, cx: &mut Context<Self>) {
+        self.project = Some(Arc::new(project));
+        self.project_failure.clear();
+        self.start_watching(cx);
+        self.sync_tree(cx);
+        self.load_selection(cx);
+    }
+
+    /// The project's own files changed in a way that may invalidate it. A failure leaves the
+    /// old watcher running, so the fix is picked up as soon as it is saved.
+    fn reload_project(&mut self, cx: &mut Context<Self>) {
+        let root = self
+            .project
+            .as_ref()
+            .and_then(|project| project.directory.parent())
+            .map(Path::to_owned);
+        let Some(root) = root else {
+            return;
+        };
+        match Project::locate(Some(&root), &root) {
+            Ok(project) => self.adopt_project(project, cx),
+            Err(error) => self.project_failure = failure_messages(&error),
+        }
+        cx.notify();
+    }
+
+    fn start_watching(&mut self, cx: &mut Context<Self>) {
         let Some(project) = &self.project else {
             return;
         };
-        match frames::list(project) {
-            Ok(frames) => self.frames = frames,
+        let watched_paths = WatchedPaths::of(project);
+        let (watcher, mut changes) = match project_watch::watch(&watched_paths) {
+            Ok(watch) => watch,
             Err(error) => {
-                self.frames.clear();
-                self.project_failure = failure_messages(&error);
+                self.project_watch = None;
+                self.watch_failure = Some(format!("{error:#}"));
+                return;
+            }
+        };
+        self.watch_failure = None;
+        let forward_changes = cx.spawn(async move |viewer, cx| {
+            while let Some(first_change) = changes.next().await {
+                let mut batch = vec![first_change];
+                cx.background_executor().timer(CHANGE_DEBOUNCE).await;
+                while let Ok(change) = changes.try_recv() {
+                    batch.push(change);
+                }
+                let update = viewer.update(cx, |viewer, cx| viewer.apply_changes(batch, cx));
+                if update.is_err() {
+                    return;
+                }
+            }
+        });
+        self.project_watch = Some((watcher, watched_paths, forward_changes));
+    }
+
+    fn apply_changes(&mut self, batch: Vec<notify::Result<Event>>, cx: &mut Context<Self>) {
+        let mut changed_paths = Vec::new();
+        for change in batch {
+            match change {
+                Ok(event) if !event.kind.is_access() => changed_paths.extend(event.paths),
+                Ok(_) => {}
+                Err(error) => {
+                    self.watch_failure = Some(error.to_string());
+                    cx.notify();
+                }
             }
         }
+        let Some((_, watched_paths, _)) = &self.project_watch else {
+            return;
+        };
+        let selected_frame = match &self.selection {
+            Some(Selection::Frame(relative_path)) => Some(relative_path.as_path()),
+            _ => None,
+        };
+        let effects = watched_paths.effects_of(&changed_paths, selected_frame);
+        if effects.reload_project || !self.project_failure.is_empty() {
+            self.reload_project(cx);
+            return;
+        }
+        if effects.refresh_tree {
+            self.sync_tree(cx);
+        }
+        if effects.reload_selection {
+            self.load_selection(cx);
+        }
+    }
+
+    /// Matches the tree to the frames on disk. Only their existence matters here, so an edit
+    /// to a frame leaves the tree alone.
+    fn sync_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let frames = frames::list(project).unwrap_or_else(|error| {
+            self.project_failure = failure_messages(&error);
+            Vec::new()
+        });
+        let same_frames = frames
+            .iter()
+            .map(|file| &file.relative_path)
+            .eq(self.frames.iter().map(|file| &file.relative_path));
+        if same_frames && self.tree_state.read(cx).entry(0).is_some() {
+            return;
+        }
+        self.frames = frames;
         let items = frame_tree::build_items(&self.frames, &self.collapsed_folders);
         self.tree_state.update(cx, |tree_state, cx| {
             let selected_id = tree_state.selected_item().map(|item| item.id.clone());
@@ -190,6 +293,22 @@ impl Viewer {
             let selected_index = selected_id.and_then(|id| tree_state.index_of(&id));
             tree_state.set_selected_index(selected_index, cx);
         });
+        self.clear_selection_if_deleted(cx);
+    }
+
+    fn clear_selection_if_deleted(&mut self, cx: &mut Context<Self>) {
+        if let Some(Selection::Frame(selected_path)) = &self.selection {
+            let still_exists = self
+                .frames
+                .iter()
+                .any(|file| file.relative_path.as_ref() == Some(selected_path));
+            if !still_exists {
+                self.selection = None;
+                self.viewport = None;
+                self.load_task = None;
+                self.show(Content::Nothing, cx);
+            }
+        }
     }
 
     fn render_tree(&self) -> impl IntoElement {
@@ -340,6 +459,11 @@ impl Viewer {
     }
 
     fn render_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.project_failure.is_empty() {
+            return self
+                .render_failure(&self.project_failure, cx)
+                .into_any_element();
+        }
         match &self.content {
             Content::Nothing | Content::Loading | Content::Frame(_) => {
                 self.render_canvas(cx).into_any_element()
@@ -521,7 +645,21 @@ impl Render for Viewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match &self.project {
             None => self.render_start_screen(cx).into_any_element(),
-            Some(_) => self.render_project(cx).into_any_element(),
+            Some(_) => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .when_some(self.watch_failure.clone(), |column, failure| {
+                    column.child(
+                        div()
+                            .p_2()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Live updates stopped: {failure}")),
+                    )
+                })
+                .child(div().flex_1().min_h_0().child(self.render_project(cx)))
+                .into_any_element(),
         };
         div()
             .size_full()
