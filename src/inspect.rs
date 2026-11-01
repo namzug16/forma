@@ -241,4 +241,9 @@ mod tests {
         assert_eq!(report["layers"][0]["visible"], true);
         assert_eq!(report["layers"][0]["effectiveVisible"], false);
     }
+
+    #[test]
+    fn hidden_groups_do_not_warn_about_clipped_descendants() {
+        assert!(scene_with_hidden_group().warnings.is_empty());
+    }
 }

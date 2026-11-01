@@ -314,10 +314,10 @@ fn warn_about_clipped_nodes(
     visible_area: Bounds,
     warnings: &mut Vec<Diagnostic>,
 ) {
-    for node in nodes {
+    for node in nodes.iter().filter(|node| node.visible) {
         let layout = NodeLayout::of(node, parent, visible_area);
         let has_area = node.bounds.width > 0.0 && node.bounds.height > 0.0;
-        if node.visible && has_area && layout.clipped_bounds.is_none() {
+        if has_area && layout.clipped_bounds.is_none() {
             warnings.push(
                 Diagnostic::new("element_clipped", "this node is entirely clipped")
                     .on_layer(node.id.clone()),
