@@ -511,15 +511,42 @@ mod tests {
     use crate::text::FontLibrary;
     use crate::tokens::Tokens;
 
-    fn render_json(frame_json: &str, tokens_json: &str) -> Pixmap {
+    fn scene_json(frame_json: &str, tokens_json: &str) -> Scene {
         let resources = Resources {
             tokens: Tokens::parse(tokens_json).unwrap(),
             assets: Assets::new("/no/assets".into()),
             fonts: FontLibrary::default(),
         };
-        let scene = build(&parse_frame(frame_json).unwrap(), &resources).unwrap();
-        render(&scene, 1.0).unwrap()
+        build(&parse_frame(frame_json).unwrap(), &resources).unwrap()
     }
+
+    fn render_json(frame_json: &str, tokens_json: &str) -> Pixmap {
+        render(&scene_json(frame_json, tokens_json), 1.0).unwrap()
+    }
+
+    fn frame_with(children: &str) -> String {
+        format!(
+            r#"{{ "version": 1, "id": "f", "width": 100, "height": 100, "children": [{children}] }}"#
+        )
+    }
+
+    /// A 10×10 red square with this id at (`x`, `y`).
+    fn red_square(id: &str, x: u32, y: u32) -> String {
+        format!(
+            r##"{{ "id": "{id}", "type": "rect", "x": {x}, "y": {y}, "width": 10, "height": 10,
+                  "fill": {{ "color": "#FF0000" }} }}"##
+        )
+    }
+
+    fn group_children(scene: &Scene) -> &[SceneNode] {
+        let SceneKind::Group { children, .. } = &scene.nodes[0].kind else {
+            panic!("the first node is a group");
+        };
+        children
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const EMPTY: [u8; 4] = [0, 0, 0, 0];
 
     /// Straight (not premultiplied) RGBA at a pixel.
     fn pixel(canvas: &Pixmap, x: u32, y: u32) -> [u8; 4] {
@@ -624,5 +651,144 @@ mod tests {
         // Inside the group's unrotated box, but outside the rotated clip.
         assert_eq!(pixel(&canvas, 33, 33)[3], 0);
         assert_near(pixel(&canvas, 99, 1), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn children_are_positioned_relative_to_their_group() {
+        let square = red_square("square", 5, 5);
+        let frame = frame_with(&format!(
+            r#"{{ "id": "group", "type": "group", "x": 20, "y": 10, "children": [{square}] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        assert_eq!(pixel(&canvas, 30, 20), RED);
+        assert_eq!(pixel(&canvas, 10, 10), EMPTY);
+    }
+
+    #[test]
+    fn moving_a_group_moves_its_children_without_changing_their_transforms() {
+        let squares = format!("{},{}", red_square("a", 0, 0), red_square("b", 20, 0));
+        let at = |x: u32| {
+            frame_with(&format!(
+                r#"{{ "id": "group", "type": "group", "x": {x}, "children": [{squares}] }}"#
+            ))
+        };
+        let (before, after) = (scene_json(&at(0), "{}"), scene_json(&at(50), "{}"));
+
+        for (child_before, child_after) in
+            group_children(&before).iter().zip(group_children(&after))
+        {
+            assert_eq!(child_before.transform, child_after.transform);
+        }
+        let canvas = render(&after, 1.0).unwrap();
+        assert_eq!(pixel(&canvas, 5, 5), EMPTY);
+        assert_eq!(pixel(&canvas, 55, 5), RED);
+        assert_eq!(pixel(&canvas, 75, 5), RED);
+    }
+
+    #[test]
+    fn a_group_rotates_its_children_around_the_pivot() {
+        let square = red_square("square", 0, 0);
+        let frame = frame_with(&format!(
+            r#"{{ "id": "group", "type": "group", "x": 50, "y": 50, "width": 20, "height": 20,
+                  "anchor": [0.5, 0.5], "rotation": 90, "children": [{square}] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        // The top-left quadrant of the group turns to the top-right.
+        assert_eq!(pixel(&canvas, 55, 45), RED);
+        assert_eq!(pixel(&canvas, 45, 45), EMPTY);
+    }
+
+    #[test]
+    fn scaling_a_group_scales_children_and_the_gaps_between_them() {
+        let squares = format!("{},{}", red_square("a", 0, 0), red_square("b", 20, 0));
+        let frame = frame_with(&format!(
+            r#"{{ "id": "group", "type": "group", "scaleX": 2, "scaleY": 2,
+                  "children": [{squares}] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        assert_eq!(pixel(&canvas, 15, 15), RED);
+        assert_eq!(pixel(&canvas, 30, 5), EMPTY);
+        assert_eq!(pixel(&canvas, 55, 15), RED);
+    }
+
+    #[test]
+    fn nested_groups_compose_their_transforms() {
+        let square = red_square("square", 0, 0);
+        let frame = frame_with(&format!(
+            r#"{{ "id": "outer", "type": "group", "x": 50, "rotation": 90, "children": [
+                {{ "id": "inner", "type": "group", "x": 10, "scaleX": 2, "scaleY": 2,
+                   "children": [{square}] }} ] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        // Inner places the square over x 10..30, y 0..20; outer turns that to x 30..50, y 10..30.
+        assert_eq!(pixel(&canvas, 40, 20), RED);
+        assert_eq!(pixel(&canvas, 15, 5), EMPTY);
+    }
+
+    #[test]
+    fn changing_one_child_leaves_its_siblings_alone() {
+        let with_second_at = |x: u32| {
+            let squares = format!("{},{}", red_square("a", 0, 0), red_square("b", x, 0));
+            frame_with(&format!(
+                r#"{{ "id": "group", "type": "group", "children": [{squares}] }}"#
+            ))
+        };
+        let before = scene_json(&with_second_at(20), "{}");
+        let after = scene_json(&with_second_at(60), "{}");
+
+        assert_eq!(
+            group_children(&before)[0].transform,
+            group_children(&after)[0].transform
+        );
+        let canvas = render(&after, 1.0).unwrap();
+        assert_eq!(pixel(&canvas, 5, 5), RED);
+        assert_eq!(pixel(&canvas, 25, 5), EMPTY);
+        assert_eq!(pixel(&canvas, 65, 5), RED);
+    }
+
+    #[test]
+    fn a_hidden_group_hides_descendants_that_are_visible_themselves() {
+        let square = red_square("square", 0, 0);
+        let frame = frame_with(&format!(
+            r#"{{ "id": "outer", "type": "group", "visible": false, "children": [
+                {{ "id": "inner", "type": "group", "visible": true, "children": [{square}] }} ] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        assert!(canvas.pixels().iter().all(|pixel| pixel.alpha() == 0));
+    }
+
+    #[test]
+    fn nested_clips_keep_only_their_overlap() {
+        let flood = r##"{ "id": "flood", "type": "rect", "width": 100, "height": 100,
+                          "fill": { "color": "#FF0000" } }"##;
+        let frame = frame_with(&format!(
+            r#"{{ "id": "outer", "type": "group", "width": 20, "height": 100, "clip": true,
+                  "children": [
+                {{ "id": "inner", "type": "group", "x": 10, "width": 20, "height": 100,
+                   "clip": true, "children": [{flood}] }} ] }}"#
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        assert_eq!(pixel(&canvas, 5, 50), EMPTY);
+        assert_eq!(pixel(&canvas, 15, 50), RED);
+        assert_eq!(pixel(&canvas, 25, 50), EMPTY);
+    }
+
+    #[test]
+    fn later_children_draw_over_earlier_ones() {
+        let frame = frame_with(&format!(
+            r##"{{ "id": "group", "type": "group", "children": [
+                {{ "id": "under", "type": "rect", "width": 10, "height": 10,
+                   "fill": {{ "color": "#0000FF" }} }},
+                {} ] }}"##,
+            red_square("over", 0, 0)
+        ));
+
+        assert_eq!(pixel(&render_json(&frame, "{}"), 5, 5), RED);
     }
 }
