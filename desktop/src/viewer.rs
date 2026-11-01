@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -14,11 +16,16 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
 
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
+use crate::viewport::Viewport;
+
+/// Scroll distance that doubles the zoom is about 70 pixels.
+const ZOOM_PER_SCROLL_PIXEL: f32 = 0.01;
 
 /// What the main area shows for the current selection.
 enum Content {
@@ -39,6 +46,11 @@ pub struct Viewer {
     collapsed_folders: HashSet<SharedString>,
     selection: Option<Selection>,
     content: Content,
+    /// `None` until the frame is fitted to the canvas.
+    viewport: Option<Viewport>,
+    /// Filled in on paint: input events arrive in window coordinates.
+    canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
+    drag_position: Option<Point<Pixels>>,
     /// Dropping it cancels a load that a newer selection or change has replaced.
     load_task: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
@@ -72,6 +84,9 @@ impl Viewer {
             collapsed_folders: HashSet::new(),
             selection: None,
             content: Content::Nothing,
+            viewport: None,
+            canvas_bounds: Rc::default(),
+            drag_position: None,
             load_task: None,
             _subscriptions: subscriptions,
         }
@@ -80,6 +95,7 @@ impl Viewer {
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         if self.selection.as_ref() != Some(&selection) {
             self.selection = Some(selection);
+            self.viewport = None;
             self.show(Content::Loading, cx);
             self.load_selection(cx);
         }
@@ -189,7 +205,7 @@ impl Viewer {
         })
     }
 
-    fn render_project(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_project(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         h_resizable("panels")
             .child(
                 resizable_panel()
@@ -211,16 +227,123 @@ impl Viewer {
             )
     }
 
-    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn fit_frame(&mut self, cx: &mut Context<Self>) {
+        self.viewport = None;
+        cx.notify();
+    }
+
+    fn fitted_viewport(&mut self) -> Option<Viewport> {
+        let Content::Frame(frame) = &self.content else {
+            return None;
+        };
+        let canvas_size = self.canvas_bounds.get().size;
+        let viewport = self.viewport.get_or_insert_with(|| {
+            Viewport::fitting(
+                size(frame.width, frame.height),
+                size(canvas_size.width.into(), canvas_size.height.into()),
+            )
+        });
+        Some(*viewport)
+    }
+
+    fn zoom_at(&mut self, factor: f32, window_position: Point<Pixels>, cx: &mut Context<Self>) {
+        let origin = self.canvas_bounds.get().origin;
+        if let Some(viewport) = &mut self.viewport {
+            viewport.zoom_at(
+                factor,
+                point(
+                    (window_position.x - origin.x).into(),
+                    (window_position.y - origin.y).into(),
+                ),
+            );
+            cx.notify();
+        }
+    }
+
+    fn pan(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(viewport) = &mut self.viewport {
+            viewport.pan(point(delta.x.into(), delta.y.into()));
+            cx.notify();
+        }
+    }
+
+    fn render_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = self.fitted_viewport();
+        let canvas_bounds = self.canvas_bounds.clone();
+        div()
+            .id("canvas")
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(cx.theme().muted)
+            .child(
+                canvas(
+                    move |bounds, _, _| canvas_bounds.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when_some(
+                viewport.zip(self.displayed_frame()),
+                |canvas, (viewport, frame)| {
+                    canvas.child(
+                        img(ImageSource::Render(frame.image.clone()))
+                            .absolute()
+                            .left(px(viewport.offset.x))
+                            .top(px(viewport.offset.y))
+                            .w(px(frame.width * viewport.zoom))
+                            .h(px(frame.height * viewport.zoom)),
+                    )
+                },
+            )
+            .on_scroll(cx.listener(|viewer, event: &ScrollEvent, window, cx| {
+                let delta = event.delta.pixel_delta(window.line_height());
+                if event.modifiers.platform {
+                    let scrolled: f32 = delta.y.into();
+                    let factor = (scrolled * ZOOM_PER_SCROLL_PIXEL).exp();
+                    viewer.zoom_at(factor, event.position, cx);
+                } else {
+                    viewer.pan(delta, cx);
+                }
+            }))
+            .on_pinch(cx.listener(|viewer, event: &PinchEvent, _, cx| {
+                viewer.zoom_at(1.0 + event.delta, event.position, cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|viewer, event: &MouseDownEvent, _, _| {
+                    viewer.drag_position = Some(event.position);
+                }),
+            )
+            .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, _, cx| {
+                if let Some(previous_position) = viewer.drag_position {
+                    viewer.drag_position = Some(event.position);
+                    viewer.pan(event.position - previous_position, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.drag_position = None),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.drag_position = None),
+            )
+    }
+
+    fn displayed_frame(&self) -> Option<&RenderedFrame> {
         match &self.content {
-            Content::Nothing | Content::Loading => div().into_any_element(),
-            Content::Frame(frame) => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(img(ImageSource::Render(frame.image.clone())).size_full())
-                .into_any_element(),
+            Content::Frame(frame) => Some(frame),
+            _ => None,
+        }
+    }
+
+    fn render_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        match &self.content {
+            Content::Nothing | Content::Loading | Content::Frame(_) => {
+                self.render_canvas(cx).into_any_element()
+            }
             Content::Text(text) => div()
                 .id("text-content")
                 .size_full()
