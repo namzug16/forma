@@ -47,10 +47,10 @@ pub fn apply_dark_theme(cx: &mut App) {
     colors.list_hover = rgb(CONTROL).into();
     colors.list_active = rgb(SELECTED).into();
     colors.list_active_border = rgba(0x00000000).into();
-    colors.primary = rgb(ACCENT).into();
-    colors.primary_hover = rgb(ACCENT_HOVER).into();
-    colors.primary_active = rgb(ACCENT_HOVER).into();
-    colors.primary_foreground = rgb(0xffffff).into();
+    colors.button_primary = rgb(ACCENT).into();
+    colors.button_primary_hover = rgb(ACCENT_HOVER).into();
+    colors.button_primary_active = rgb(ACCENT_HOVER).into();
+    colors.button_primary_foreground = rgb(0xffffff).into();
     colors.danger = rgb(DANGER).into();
     colors.warning = rgb(WARNING).into();
     theme.tokens = ThemeTokens::from(*colors);

@@ -27,10 +27,12 @@ use serde_json::Value;
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
 use crate::project_watch::{self, WatchedPaths};
+use crate::style;
 use crate::viewport::Viewport;
 
 const ICON_SIZE: f32 = 14.;
 const TREE_ROW_HEIGHT: f32 = 28.;
+const FRAME_LABEL_OFFSET: f32 = 20.;
 /// Leaves room for the window's traffic lights above the panels' own content.
 const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
@@ -465,12 +467,13 @@ impl Viewer {
     fn render_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = self.fitted_viewport();
         let canvas_bounds = self.canvas_bounds.clone();
+        let secondary_text = cx.theme().muted_foreground;
         div()
             .id("canvas")
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().muted)
+            .bg(style::canvas_background())
             .child(
                 canvas(
                     move |bounds, _, _| canvas_bounds.set(bounds),
@@ -482,16 +485,43 @@ impl Viewer {
             .when_some(
                 viewport.zip(self.displayed_frame()),
                 |canvas, (viewport, frame)| {
-                    canvas.child(
-                        img(ImageSource::Render(frame.image.clone()))
-                            .absolute()
-                            .left(px(viewport.offset.x))
-                            .top(px(viewport.offset.y))
-                            .w(px(frame.width * viewport.zoom))
-                            .h(px(frame.height * viewport.zoom)),
-                    )
+                    let frame_width = frame.width * viewport.zoom;
+                    canvas
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(viewport.offset.x))
+                                .top(px(viewport.offset.y - FRAME_LABEL_OFFSET))
+                                .w(px(frame_width))
+                                .truncate()
+                                .text_xs()
+                                .text_color(secondary_text)
+                                .child(frame_title(frame)),
+                        )
+                        .child(
+                            img(ImageSource::Render(frame.image.clone()))
+                                .absolute()
+                                .left(px(viewport.offset.x))
+                                .top(px(viewport.offset.y))
+                                .w(px(frame_width))
+                                .h(px(frame.height * viewport.zoom)),
+                        )
                 },
             )
+            .when(matches!(self.content, Content::Nothing), |canvas| {
+                canvas.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .text_color(secondary_text)
+                        .child(icon(IconName::Frame, secondary_text).size(px(24.)))
+                        .child("Select a frame"),
+                )
+            })
             .on_scroll(cx.listener(|viewer, event: &ScrollEvent, window, cx| {
                 let delta = event.delta.pixel_delta(window.line_height());
                 if event.modifiers.platform {
@@ -547,11 +577,12 @@ impl Viewer {
             Content::Text(text) => div()
                 .id("text-content")
                 .size_full()
+                .bg(style::canvas_background())
                 .overflow_y_scrollbar()
                 .child(
                     div()
-                        .p_4()
-                        .text_sm()
+                        .p_6()
+                        .text_xs()
                         .font_family(cx.theme().mono_font_family.clone())
                         .child(text.clone()),
                 )
@@ -568,73 +599,163 @@ impl Viewer {
         div()
             .id("failure")
             .size_full()
-            .p_6()
+            .bg(style::canvas_background())
             .flex()
             .flex_col()
+            .items_center()
+            .justify_center()
             .gap_2()
+            .p_6()
             .overflow_y_scrollbar()
-            .child(div().text_color(cx.theme().danger).child(subject))
-            .child("Ask your AI to fix it.")
+            .child(icon(IconName::TriangleAlert, cx.theme().danger).size(px(24.)))
+            .child(div().font_weight(FontWeight::MEDIUM).child(subject))
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Ask your AI to fix it."),
+            )
             .children(messages.iter().map(|message| {
                 div()
-                    .text_sm()
+                    .mt_2()
+                    .max_w(px(560.))
+                    .p_3()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().muted)
+                    .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .font_family(cx.theme().mono_font_family.clone())
                     .child(message.clone())
             }))
     }
 
+    fn render_details_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let frame = self.displayed_frame();
+        let (title, subtitle) = match (&self.selection, frame) {
+            (Some(Selection::Tokens), _) => ("Tokens".to_owned(), "Design tokens"),
+            (Some(Selection::Config), _) => ("Config".to_owned(), "Project settings"),
+            (_, Some(frame)) => (frame_title(frame), "Frame"),
+            (Some(Selection::Frame(relative_path)), None) => (
+                relative_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                "Frame",
+            ),
+            _ => ("Inspect".to_owned(), "Nothing selected"),
+        };
+        let zoom = frame.and(self.viewport).map(|viewport| viewport.zoom);
+        div()
+            .flex_none()
+            .pt(px(TRAFFIC_LIGHTS_HEIGHT))
+            .px_4()
+            .pb_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .children(zoom.map(|zoom| {
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .child(format!("{:.0}%", zoom * 100.))
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(subtitle),
+            )
+    }
+
     fn render_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut rows = Vec::new();
-        if let Content::Frame(frame) = &self.content {
+        let mut sections = Vec::new();
+        if let Some(frame) = self.displayed_frame() {
             let report = &frame.report;
-            rows.push(detail_heading(report["frame"].as_str().unwrap_or_default()));
-            rows.push(detail_row(
-                format!("{} × {}", frame.width, frame.height),
-                0,
-                cx,
-            ));
-            if !report["background"].is_null() {
-                rows.push(detail_row(
-                    format!("background {}", report["background"]),
-                    0,
-                    cx,
-                ));
-            }
+            sections.push(
+                detail_section("Size", cx)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(value_chip("W", None, frame.width.to_string(), cx))
+                            .child(value_chip("H", None, frame.height.to_string(), cx)),
+                    )
+                    .into_any_element(),
+            );
+            let (swatch, description) = describe_paint(&report["background"]);
+            sections.push(
+                detail_section("Background", cx)
+                    .child(value_chip("", swatch, description, cx))
+                    .into_any_element(),
+            );
             let warnings = report["warnings"].as_array().map(Vec::as_slice);
-            for warning in warnings.unwrap_or_default() {
-                let message = warning["message"].as_str().unwrap_or_default();
-                rows.push(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().warning)
-                        .child(message.to_owned())
+            if let Some(warnings) = warnings.filter(|warnings| !warnings.is_empty()) {
+                sections.push(
+                    detail_section("Warnings", cx)
+                        .children(warnings.iter().map(|warning| {
+                            h_flex()
+                                .items_start()
+                                .gap_2()
+                                .text_xs()
+                                .child(icon(IconName::TriangleAlert, cx.theme().warning))
+                                .child(div().min_w_0().child(
+                                    warning["message"].as_str().unwrap_or_default().to_owned(),
+                                ))
+                        }))
                         .into_any_element(),
                 );
             }
-            rows.push(detail_heading("Layers"));
-            push_layer_rows(&report["layers"], 0, &mut rows, cx);
+            let mut layer_rows = Vec::new();
+            push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
+            sections.push(
+                detail_section("Layers", cx)
+                    .border_b_0()
+                    .gap_0()
+                    .children(layer_rows)
+                    .into_any_element(),
+            );
         }
         div()
-            .id("details")
             .size_full()
-            .p_3()
             .flex()
             .flex_col()
-            .gap_1()
-            .overflow_y_scrollbar()
-            .children(rows)
+            .bg(cx.theme().background)
+            .child(self.render_details_header(cx))
+            .child(
+                div()
+                    .id("details")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .children(sections),
+            )
     }
 
     fn render_start_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let secondary_text = cx.theme().muted_foreground;
         div()
             .size_full()
+            .bg(style::canvas_background())
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_4()
-            .child("Open a project to view its frames")
+            .gap_3()
+            .child(icon(IconName::FolderOpen, secondary_text).size(px(32.)))
+            .child(
+                div()
+                    .text_color(secondary_text)
+                    .child("Open a project to view its frames"),
+            )
             .child(
                 Button::new("open-directory")
                     .primary()
@@ -644,7 +765,7 @@ impl Viewer {
             .children(self.project_failure.iter().map(|message| {
                 div()
                     .max_w(px(560.))
-                    .text_sm()
+                    .text_xs()
                     .text_color(cx.theme().danger)
                     .child(message.clone())
             }))
@@ -677,27 +798,107 @@ fn icon(name: IconName, color: Hsla) -> Icon {
     Icon::new(name).size(px(ICON_SIZE)).text_color(color)
 }
 
-fn detail_heading(text: &str) -> AnyElement {
+fn detail_section(title: &str, cx: &App) -> Div {
     div()
-        .pt_2()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text.to_owned())
-        .into_any_element()
+        .flex_none()
+        .px_4()
+        .py_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(title.to_owned()),
+        )
 }
 
-fn detail_row(text: String, depth: usize, cx: &App) -> AnyElement {
-    div()
-        .pl(px(12. * depth as f32))
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
-        .into_any_element()
+/// A read-only value drawn like Figma's fields.
+fn value_chip(label: &str, swatch: Option<Hsla>, value: String, cx: &App) -> impl IntoElement {
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .h(px(TREE_ROW_HEIGHT))
+        .px_2()
+        .gap_2()
+        .rounded(cx.theme().radius)
+        .bg(cx.theme().muted)
+        .text_xs()
+        .when(!label.is_empty(), |chip| {
+            chip.child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_owned()),
+            )
+        })
+        .when_some(swatch, |chip, color| {
+            chip.child(
+                div()
+                    .flex_none()
+                    .size(px(ICON_SIZE))
+                    .rounded(px(2.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(color),
+            )
+        })
+        .child(div().truncate().child(value))
+}
+
+/// Solid paints show their color; gradients are named, with their first stop as the swatch.
+fn describe_paint(paint: &Value) -> (Option<Hsla>, String) {
+    let parse_color = |color: &Value| {
+        let color = Rgba::try_from(color.as_str()?).ok()?;
+        Some(Hsla::from(color))
+    };
+    match paint["type"].as_str() {
+        Some("solid") => (
+            parse_color(&paint["color"]),
+            opaque_hex(paint["color"].as_str().unwrap_or_default()).to_owned(),
+        ),
+        Some("linear-gradient") => (
+            parse_color(&paint["stops"][0]["color"]),
+            "Linear gradient".to_owned(),
+        ),
+        Some("radial-gradient") => (
+            parse_color(&paint["stops"][0]["color"]),
+            "Radial gradient".to_owned(),
+        ),
+        _ => (None, "None".to_owned()),
+    }
+}
+
+/// Forma writes the alpha even when it is full, which is only noise to a reader.
+fn opaque_hex(color: &str) -> &str {
+    color
+        .strip_suffix("FF")
+        .filter(|hex| hex.len() == 7)
+        .unwrap_or(color)
+}
+
+fn frame_title(frame: &RenderedFrame) -> String {
+    frame.report["frame"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn layer_icon(kind: &str) -> IconName {
+    match kind {
+        "rect" => IconName::Square,
+        "ellipse" => IconName::Circle,
+        "line" => IconName::Minus,
+        "text" => IconName::Type,
+        "image" => IconName::Image,
+        "svg" => IconName::Shapes,
+        _ => IconName::Group,
+    }
 }
 
 fn push_layer_rows(layers: &Value, depth: usize, rows: &mut Vec<AnyElement>, cx: &App) {
     for layer in layers.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let kind = layer["type"].as_str().unwrap_or_default();
-        let id = layer["id"].as_str().unwrap_or_default();
         let bounds = &layer["clippedBounds"];
         let placement = if bounds.is_null() {
             "clipped".to_owned()
@@ -710,7 +911,32 @@ fn push_layer_rows(layers: &Value, depth: usize, rows: &mut Vec<AnyElement>, cx:
                 bounds["height"].as_f64().unwrap_or_default(),
             )
         };
-        rows.push(detail_row(format!("{kind} {id}  {placement}"), depth, cx));
+        let secondary_text = cx.theme().muted_foreground;
+        rows.push(
+            h_flex()
+                .h(px(TREE_ROW_HEIGHT))
+                .pl(px(16. * depth as f32))
+                .gap_2()
+                .text_xs()
+                .child(icon(
+                    layer_icon(layer["type"].as_str().unwrap_or_default()),
+                    secondary_text,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(layer["id"].as_str().unwrap_or_default().to_owned()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(secondary_text)
+                        .child(placement),
+                )
+                .into_any_element(),
+        );
         push_layer_rows(&layer["children"], depth + 1, rows, cx);
     }
 }
@@ -731,16 +957,21 @@ impl Render for Viewer {
                 .size_full()
                 .flex()
                 .flex_col()
+                .child(div().flex_1().min_h_0().child(self.render_project(cx)))
                 .when_some(self.watch_failure.clone(), |column, failure| {
                     column.child(
-                        div()
-                            .p_2()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
+                        h_flex()
+                            .flex_none()
+                            .px_4()
+                            .py_2()
+                            .gap_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .text_xs()
+                            .child(icon(IconName::TriangleAlert, cx.theme().danger))
                             .child(format!("Live updates stopped: {failure}")),
                     )
                 })
-                .child(div().flex_1().min_h_0().child(self.render_project(cx)))
                 .into_any_element(),
         };
         div()
@@ -748,5 +979,47 @@ impl Render for Viewer {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{Hsla, rgb};
+    use serde_json::{Value, json};
+
+    use super::describe_paint;
+
+    #[test]
+    fn solid_paints_show_their_color() {
+        let (swatch, description) = describe_paint(&json!({ "type": "solid", "color": "#FF0000" }));
+
+        assert_eq!(swatch, Some(Hsla::from(rgb(0xff0000))));
+        assert_eq!(description, "#FF0000");
+    }
+
+    #[test]
+    fn full_alpha_is_hidden_but_partial_alpha_is_not() {
+        let hex = |color: &str| describe_paint(&json!({ "type": "solid", "color": color })).1;
+
+        assert_eq!(hex("#101014FF"), "#101014");
+        assert_eq!(hex("#10101480"), "#10101480");
+    }
+
+    #[test]
+    fn gradients_are_named_with_their_first_stop() {
+        let paint = json!({
+            "type": "linear-gradient",
+            "stops": [{ "offset": 0, "color": "#00FF00" }, { "offset": 1, "color": "#0000FF" }]
+        });
+
+        let (swatch, description) = describe_paint(&paint);
+
+        assert_eq!(swatch, Some(Hsla::from(rgb(0x00ff00))));
+        assert_eq!(description, "Linear gradient");
+    }
+
+    #[test]
+    fn a_missing_background_is_none() {
+        assert_eq!(describe_paint(&Value::Null), (None, "None".to_owned()));
     }
 }
