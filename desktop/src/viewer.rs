@@ -321,6 +321,11 @@ impl Viewer {
 
     fn render_tree(&self) -> impl IntoElement {
         tree(&self.tree_state, |index, entry, is_selected, _, cx| {
+            if entry.is_disabled() {
+                return ListItem::new(index)
+                    .h(px(TREE_ROW_HEIGHT))
+                    .child(div().w_full().h(px(1.)).bg(cx.theme().border));
+            }
             let secondary_text = cx.theme().muted_foreground;
             let is_frames_root = entry.is_folder() && entry.depth() == 0;
             let item_icon = match Selection::from_item_id(&entry.item().id) {
@@ -403,8 +408,8 @@ impl Viewer {
         h_resizable("panels")
             .child(
                 resizable_panel()
-                    .size(px(260.))
-                    .size_range(px(180.)..px(480.))
+                    .size(px(200.))
+                    .size_range(px(160.)..px(480.))
                     .child(
                         div()
                             .size_full()

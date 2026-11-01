@@ -11,6 +11,7 @@ const FOLDER_PREFIX: &str = "folder:";
 const FRAME_PREFIX: &str = "frame:";
 const TOKENS_ID: &str = "tokens";
 const CONFIG_ID: &str = "config";
+const SEPARATOR_ID: &str = "separator";
 
 /// What the main area is showing. Folders only expand, so they are never selected.
 #[derive(Clone, Debug, PartialEq)]
@@ -92,17 +93,20 @@ pub fn build_items(
     let is_expanded = !collapsed_folders.contains(frames_id.as_str());
     let children = root.into_items(&frames_id, collapsed_folders);
     vec![
+        TreeItem::new(TOKENS_ID, "Tokens"),
+        TreeItem::new(CONFIG_ID, "Config"),
+        TreeItem::new(SEPARATOR_ID, "").disabled(true),
         TreeItem::new(frames_id, "Frames")
             .children(children)
             .expanded(is_expanded),
-        TreeItem::new(TOKENS_ID, "Tokens"),
-        TreeItem::new(CONFIG_ID, "Config"),
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FRAMES_ROOT: usize = 3;
 
     fn frame(relative_path: &str) -> FrameFile {
         FrameFile {
@@ -118,20 +122,23 @@ mod tests {
             &HashSet::new(),
         );
 
-        let labels: Vec<_> = items[0]
+        let labels: Vec<_> = items[FRAMES_ROOT]
             .children
             .iter()
             .map(|item| item.label.as_ref())
             .collect();
         assert_eq!(labels, ["social", "hero"]);
-        assert_eq!(items[0].children[0].children[0].label.as_ref(), "post");
+        assert_eq!(
+            items[FRAMES_ROOT].children[0].children[0].label.as_ref(),
+            "post"
+        );
     }
 
     #[test]
     fn frame_items_select_their_relative_path() {
         let items = build_items(&[frame("social/post.json")], &HashSet::new());
 
-        let post = &items[0].children[0].children[0];
+        let post = &items[FRAMES_ROOT].children[0].children[0];
         assert_eq!(
             Selection::from_item_id(&post.id),
             Some(Selection::Frame("social/post.json".into()))
@@ -142,31 +149,37 @@ mod tests {
     fn folders_select_nothing() {
         let items = build_items(&[frame("social/post.json")], &HashSet::new());
 
-        assert_eq!(Selection::from_item_id(&items[0].children[0].id), None);
+        assert_eq!(
+            Selection::from_item_id(&items[FRAMES_ROOT].children[0].id),
+            None
+        );
     }
 
     #[test]
     fn collapsed_folders_stay_collapsed_when_the_tree_is_rebuilt() {
         let first = build_items(&[frame("social/post.json")], &HashSet::new());
-        let collapsed = HashSet::from([first[0].children[0].id.clone()]);
+        let collapsed = HashSet::from([first[FRAMES_ROOT].children[0].id.clone()]);
 
         let rebuilt = build_items(&[frame("social/post.json")], &collapsed);
 
-        assert!(!rebuilt[0].children[0].is_expanded());
-        assert!(rebuilt[0].is_expanded());
+        assert!(!rebuilt[FRAMES_ROOT].children[0].is_expanded());
+        assert!(rebuilt[FRAMES_ROOT].is_expanded());
     }
 
     #[test]
-    fn an_empty_project_still_offers_tokens_and_config() {
+    fn tokens_and_config_come_first_and_are_separated_from_the_frames() {
         let items = build_items(&[], &HashSet::new());
 
         assert_eq!(
-            Selection::from_item_id(&items[1].id),
+            Selection::from_item_id(&items[0].id),
             Some(Selection::Tokens)
         );
         assert_eq!(
-            Selection::from_item_id(&items[2].id),
+            Selection::from_item_id(&items[1].id),
             Some(Selection::Config)
         );
+        assert!(items[2].is_disabled());
+        assert_eq!(Selection::from_item_id(&items[2].id), None);
+        assert_eq!(items[FRAMES_ROOT].label.as_ref(), "Frames");
     }
 }
