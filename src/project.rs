@@ -146,14 +146,22 @@ impl Project {
         self.resolve(&self.config.frames)
     }
 
+    pub fn tokens_path(&self) -> PathBuf {
+        self.resolve(&self.config.tokens)
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.directory.join(CONFIG_FILE)
+    }
+
     /// The source tree that rendering must never write into.
     pub fn is_source_path(&self, path: &Path) -> bool {
         let frames = self.frames_directory();
         let assets = self.assets_directory();
         path.starts_with(frames)
             || path.starts_with(assets)
-            || path == self.resolve(&self.config.tokens)
-            || path == self.directory.join(CONFIG_FILE)
+            || path == self.tokens_path()
+            || path == self.config_path()
     }
 
     pub fn default_output_path(&self, file: &FrameFile) -> PathBuf {
@@ -167,7 +175,7 @@ impl Project {
     }
 
     pub fn tokens(&self) -> Result<Tokens> {
-        Tokens::load(&self.resolve(&self.config.tokens))
+        Tokens::load(&self.tokens_path())
     }
 
     pub fn resources(&self) -> Result<Resources> {
