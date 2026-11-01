@@ -14,6 +14,8 @@ use crate::tokens::Color;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16384;
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+const FONT_DIRECTORY: &str = "fonts";
+const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
 
 /// Installs `bytes` at a path that must not exist yet. `Ok(false)` means it already did, and the
 /// existing file is untouched. A failed write leaves nothing behind.
@@ -120,6 +122,49 @@ impl Assets {
         }
         let bytes = fs::read(&resolved).map_err(unreadable)?;
         Ok((resolved, bytes))
+    }
+
+    /// Font files under `fonts/`, relative to the assets directory, sorted so that resolving a
+    /// family does not depend on directory order. Symlinks are skipped.
+    pub fn font_files(&self) -> Result<Vec<String>, Diagnostic> {
+        let unreadable = |path: &Path, error: std::io::Error| {
+            Diagnostic::new("asset_unreadable", format!("{}: {error}", path.display()))
+        };
+        let mut pending_directories = vec![self.directory.join(FONT_DIRECTORY)];
+        let mut files = Vec::new();
+        while let Some(directory) = pending_directories.pop() {
+            let entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(unreadable(&directory, error)),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|error| unreadable(&directory, error))?;
+                let path = entry.path();
+                let file_type = entry
+                    .file_type()
+                    .map_err(|error| unreadable(&path, error))?;
+                if file_type.is_dir() {
+                    pending_directories.push(path);
+                } else if file_type.is_file()
+                    && path.extension().is_some_and(|extension| {
+                        FONT_EXTENSIONS
+                            .iter()
+                            .any(|known| extension.eq_ignore_ascii_case(known))
+                    })
+                {
+                    let relative = path.strip_prefix(&self.directory);
+                    files.push(
+                        relative
+                            .expect("walked from here")
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        files.sort();
+        Ok(files)
     }
 
     pub fn load_image(

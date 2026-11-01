@@ -1,8 +1,10 @@
 //! Font selection and text layout. Fonts are never substituted without being declared.
 
 use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use fontdb::{Database, Family, Query, Stretch, Style, Weight};
+use fontdb::{Database, Family, ID, Query, Source, Stretch, Style, Weight};
 use rustybuzz::ttf_parser::{GlyphId, OutlineBuilder};
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use tiny_skia::{Path, PathBuilder};
@@ -41,14 +43,53 @@ pub struct TextRequest<'a> {
     pub path: &'a str,
 }
 
+/// Everything under `assets/fonts`, loaded through `Assets` so its path rules apply.
+#[derive(Debug, Default)]
+pub struct ProjectFonts {
+    pub database: Database,
+    /// Absolute paths, for reporting which file a face came from.
+    pub paths: HashMap<ID, String>,
+}
+
+impl ProjectFonts {
+    fn load(assets: &Assets) -> Result<Self, Diagnostic> {
+        let mut fonts = Self::default();
+        for file in assets.font_files()? {
+            let (resolved, data) = assets.read(&file, &file)?;
+            let path = resolved.display().to_string();
+            let ids = fonts
+                .database
+                .load_font_source(Source::Binary(Arc::new(data)));
+            if ids.is_empty() {
+                return Err(Diagnostic::new(
+                    "invalid_font",
+                    format!("{path} is not a usable font"),
+                ));
+            }
+            fonts
+                .paths
+                .extend(ids.into_iter().map(|id| (id, path.clone())));
+        }
+        Ok(fonts)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FontLibrary {
-    /// Scanning system fonts is slow, and frames using only project fonts never need it.
+    /// Reading fonts is slow, and frames that name a font file need neither of these.
+    project_fonts: OnceCell<Result<ProjectFonts, Diagnostic>>,
     system_fonts: OnceCell<Database>,
 }
 
 impl FontLibrary {
-    fn system_fonts(&self) -> &Database {
+    pub fn project_fonts(&self, assets: &Assets) -> Result<&ProjectFonts, Diagnostic> {
+        self.project_fonts
+            .get_or_init(|| ProjectFonts::load(assets))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub fn system_fonts(&self) -> &Database {
         self.system_fonts.get_or_init(|| {
             let mut database = Database::new();
             database.load_system_fonts();
@@ -56,44 +97,23 @@ impl FontLibrary {
         })
     }
 
-    fn load_system_font(
+    /// Project fonts win, so a checked-in font renders the same on every machine.
+    fn load_family(
         &self,
         family: &str,
         font: &ResolvedFont,
+        assets: &Assets,
         path: &str,
-    ) -> Option<LoadedFont> {
-        let database = self.system_fonts();
-        let style = if font.italic {
-            Style::Italic
-        } else {
-            Style::Normal
-        };
-        let id = database.query(&Query {
-            families: &[Family::Name(family)],
-            weight: Weight(font.weight),
-            stretch: Stretch::Normal,
-            style,
-        })?;
-        let face = database.face(id)?;
-        let warning = (face.weight != Weight(font.weight) || face.style != style).then(|| {
-            Diagnostic::new(
-                "font_style_substituted",
-                format!(
-                    "\"{family}\" has no exact match for weight {}; using weight {} style {:?}",
-                    font.weight, face.weight.0, face.style
-                ),
-            )
-            .at(path)
+    ) -> Result<Option<LoadedFont>, Diagnostic> {
+        let project = self.project_fonts(assets)?;
+        let from_project = load_from_database(&project.database, family, font, path, |id| {
+            project.paths[&id].clone()
         });
-        let (data, face_index) =
-            database.with_face_data(id, |data, face_index| (data.to_vec(), face_index))?;
-        Some(LoadedFont {
-            data,
-            face_index,
-            source: family.to_owned(),
-            is_declared_fallback: false,
-            warning,
-        })
+        Ok(from_project.or_else(|| {
+            load_from_database(self.system_fonts(), family, font, path, |_| {
+                family.to_owned()
+            })
+        }))
     }
 
     /// Declared fonts in priority order. A missing primary is only allowed with declared fallbacks.
@@ -114,10 +134,10 @@ impl FontLibrary {
                 warning: None,
             });
         } else if let Some(family) = &font.family {
-            candidates.extend(self.load_system_font(family, font, path));
+            candidates.extend(self.load_family(family, font, assets, path)?);
         }
         for family in &font.fallbacks {
-            let fallback = self.load_system_font(family, font, path);
+            let fallback = self.load_family(family, font, assets, path)?;
             candidates.extend(fallback.map(|fallback| LoadedFont {
                 is_declared_fallback: true,
                 ..fallback
@@ -127,7 +147,7 @@ impl FontLibrary {
             let name = font.family.as_deref().unwrap_or("(no family)");
             return Err(Diagnostic::new(
                 "font_not_found",
-                format!("font \"{name}\" is not installed; add a `file` under assets/fonts"),
+                format!("font \"{name}\" is not installed; run `forma fonts add \"{name}\"`"),
             )
             .at(path));
         }
@@ -170,6 +190,46 @@ impl FontLibrary {
         )
         .at(path))
     }
+}
+
+fn load_from_database(
+    database: &Database,
+    family: &str,
+    font: &ResolvedFont,
+    path: &str,
+    source_of: impl Fn(ID) -> String,
+) -> Option<LoadedFont> {
+    let style = if font.italic {
+        Style::Italic
+    } else {
+        Style::Normal
+    };
+    let id = database.query(&Query {
+        families: &[Family::Name(family)],
+        weight: Weight(font.weight),
+        stretch: Stretch::Normal,
+        style,
+    })?;
+    let face = database.face(id)?;
+    let warning = (face.weight != Weight(font.weight) || face.style != style).then(|| {
+        Diagnostic::new(
+            "font_style_substituted",
+            format!(
+                "\"{family}\" has no exact match for weight {}; using weight {} style {:?}",
+                font.weight, face.weight.0, face.style
+            ),
+        )
+        .at(path)
+    });
+    let (data, face_index) =
+        database.with_face_data(id, |data, face_index| (data.to_vec(), face_index))?;
+    Some(LoadedFont {
+        data,
+        face_index,
+        source: source_of(id),
+        is_declared_fallback: false,
+        warning,
+    })
 }
 
 fn covers_text(face: &Face, text: &str) -> bool {
@@ -391,6 +451,46 @@ mod tests {
 
         let overflowing = layout("unbreakable", &font, Some(10.0)).unwrap();
         assert_eq!(overflowing.warnings[0].code, "text_overflow");
+    }
+
+    #[test]
+    fn a_project_font_resolves_by_family() {
+        let assets_directory = tempfile::tempdir().unwrap();
+        let fonts_directory = assets_directory.path().join("fonts/nested");
+        std::fs::create_dir_all(&fonts_directory).unwrap();
+        let installed = fonts_directory.join("Tuffy.ttf");
+        let fixtures = fixture_assets();
+        std::fs::write(&installed, fixtures.read("Tuffy.ttf", "file").unwrap().1).unwrap();
+        let assets = Assets::new(assets_directory.path().into());
+        let font = ResolvedFont {
+            family: Some("Tuffy".to_owned()),
+            file: None,
+            ..fixture_font()
+        };
+        let request = TextRequest {
+            text: "text",
+            font: &font,
+            wrap_width: None,
+            align: TextAlign::Left,
+            path: "font",
+        };
+
+        let layout = FontLibrary::default().layout(&request, &assets).unwrap();
+
+        assert!(layout.font_source.ends_with("fonts/nested/Tuffy.ttf"));
+    }
+
+    #[test]
+    fn a_corrupt_project_font_is_an_error_rather_than_a_missing_family() {
+        let assets_directory = tempfile::tempdir().unwrap();
+        let fonts_directory = assets_directory.path().join("fonts");
+        std::fs::create_dir_all(&fonts_directory).unwrap();
+        std::fs::write(fonts_directory.join("broken.ttf"), "not a font").unwrap();
+        let assets = Assets::new(assets_directory.path().into());
+
+        let error = FontLibrary::default().project_fonts(&assets).unwrap_err();
+
+        assert_eq!(error.code, "invalid_font");
     }
 
     #[test]

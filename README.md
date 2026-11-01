@@ -100,8 +100,9 @@ the gradient ellipse has radii `radius × width` and `radius × height`.
 that box is as wide as the longest line. Text is left-to-right in V1. `lineHeight` is a multiple of
 `size`, and `letterSpacing` is pixels added after each glyph.
 
-**Fonts.** `file` is relative to the assets directory and takes precedence over `family`; prefer it
-for reproducible builds. `family` selects a system font. A missing font or glyph is an error unless
+**Fonts.** `file` is relative to the assets directory and takes precedence over `family`. `family`
+searches `assets/fonts` first, then system fonts, so a checked-in font renders the same on every
+machine. A missing font or glyph is an error unless
 `fallbacks` lists families to try. One font is used per text node, and using a fallback or a
 different weight is reported as a warning.
 
