@@ -1,7 +1,7 @@
 //! Reading project assets, confined to the configured assets directory.
 
-use std::fs;
-use std::io::Cursor;
+use std::fs::{self, OpenOptions};
+use std::io::{Cursor, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use image::{ImageReader, Limits};
@@ -14,6 +14,41 @@ use crate::tokens::Color;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 16384;
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+
+/// Installs `bytes` at a path that must not exist yet. `Ok(false)` means it already did, and the
+/// existing file is untouched. A failed write leaves nothing behind.
+pub fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    let parent = path.parent().expect("asset paths have a parent");
+    fs::create_dir_all(parent)?;
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    file.write_all(bytes).inspect_err(|_| {
+        // The write error is the one to report.
+        let _ = fs::remove_file(path);
+    })?;
+    Ok(true)
+}
+
+/// Replaces a file through a sibling temporary file, so a failure never leaves a partial one.
+pub fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().expect("written paths have a parent");
+    fs::create_dir_all(parent)?;
+    let file_name = path.file_name().expect("written paths have a file name");
+    let temporary_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    let result = fs::write(&temporary_path, bytes).and_then(|()| fs::rename(&temporary_path, path));
+    if result.is_err() {
+        // Nothing more to do if cleanup fails too; the write error is the one to report.
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
 
 /// Lowercase letters, digits and inner hyphens: safe in a path and a URL.
 pub fn is_safe_slug(name: &str) -> bool {
@@ -109,6 +144,12 @@ impl Assets {
             .map_err(|(code, message)| Diagnostic::new(code, message).at(path))?;
         Ok((resolved, tree))
     }
+}
+
+pub fn validate_svg(bytes: &[u8]) -> Result<(), Diagnostic> {
+    parse_svg(bytes, None)
+        .map(|_| ())
+        .map_err(|(code, message)| Diagnostic::new(code, message))
 }
 
 /// Scripts are never executed by usvg. External references are refused here; only self-contained

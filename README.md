@@ -32,6 +32,8 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 | `forma validate FRAME`, `forma validate --all` | Check frames without rendering. |
 | `forma inspect FRAME [--layer ID]` | Report hierarchy, transforms, bounds and resolved values. |
 | `forma icons search QUERY` | Search Lucide icons. |
+| `forma icons add NAME` | Download an icon. Never overwrites an existing file. |
+| `forma icons list` | List installed icons. |
 | `forma icons info NAME` | Show an icon's source and ISC license details. |
 | `forma tokens` | Print tokens with references resolved. |
 | `forma schema` | Print the document JSON Schema. |
@@ -108,6 +110,10 @@ different weight is reported as a warning.
 **SVG** assets are fitted inside the box, centered, without distortion. External references are
 ignored, only `data:` images load, and `<text>` is rejected; convert it to paths. `color` sets
 `currentColor`, which is black by default; colors hard-coded in the file stay as they are.
+
+**Icons** install to `assets/icons/lucide/NAME.svg` with their original content, and
+`manifest.json` beside them records each source and license. Reference one like any SVG:
+`{ "type": "svg", "src": "icons/lucide/star.svg", "width": 48, "height": 48, "color": "$colors.primary" }`.
 
 **Scale.** `--scale` must produce whole pixels. Rasters are limited to 16384 pixels per side and
 100 million pixels in total, assets to 64 MB, and group nesting to 64 levels.

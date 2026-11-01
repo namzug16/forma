@@ -1,6 +1,5 @@
 //! Rasterizes a resolved scene. This is the only module that knows about `tiny_skia`.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -13,7 +12,7 @@ use tiny_skia::{
 
 use usvg::Tree;
 
-use crate::assets::DecodedImage;
+use crate::assets::{DecodedImage, write_atomically};
 use crate::diagnostics::Diagnostic;
 use crate::document::{ImageFit, LineCap, LineJoin};
 use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
@@ -73,27 +72,10 @@ pub fn render(scene: &Scene, scale: f64) -> Result<Pixmap, Diagnostic> {
     Ok(canvas)
 }
 
-/// Writes to a sibling temporary file first, so a failure never leaves a partial image.
 pub fn write_png(canvas: &Pixmap, path: &Path) -> Result<()> {
     let encoded = canvas.encode_png().context("cannot encode PNG")?;
-    let parent = path
-        .parent()
-        .context("output path has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
-    let file_name = path.file_name().context("output path has no file name")?;
-    let temporary_path = parent.join(format!(
-        ".{}.{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id()
-    ));
-    let result = fs::write(&temporary_path, encoded)
-        .and_then(|()| fs::rename(&temporary_path, path))
-        .with_context(|| format!("cannot write {}", path.display()));
-    if result.is_err() {
-        // Nothing more to do if cleanup fails too; the write error is the one to report.
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
+    path.file_name().context("output path has no file name")?;
+    write_atomically(path, &encoded).with_context(|| format!("cannot write {}", path.display()))
 }
 
 pub fn copy_to_clipboard(canvas: &Pixmap) -> Result<(), arboard::Error> {
@@ -518,6 +500,8 @@ fn stroke_path(canvas: &mut Pixmap, path: &tiny_skia::Path, stroke: &Stroke, wor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
     use crate::assets::Assets;
     use crate::document::parse_frame;
     use crate::scene::{Resources, build};

@@ -97,6 +97,10 @@ pub enum Command {
 pub enum IconsCommand {
     /// Search the Lucide collection
     Search { query: String },
+    /// Download an icon into the project's assets
+    Add { name: String },
+    /// List installed icons
+    List,
     /// Show an icon's source and license
     Info { name: String },
 }
@@ -107,7 +111,7 @@ pub fn run(arguments: Cli) -> Result<ExitCode> {
         Some(Command::Inspect { frame, layer }) => {
             run_inspect(&arguments, frame, layer.as_deref())?;
         }
-        Some(Command::Icons { command }) => run_icons(command, arguments.json)?,
+        Some(Command::Icons { command }) => run_icons(&arguments, command)?,
         Some(Command::Tokens) => run_tokens(&arguments)?,
         Some(Command::Schema) => println!("{:#}", document::json_schema()),
         Some(Command::List) | None => run_list(&arguments)?,
@@ -398,7 +402,8 @@ fn run_inspect(arguments: &Cli, frame: &str, layer: Option<&str>) -> Result<()> 
     Ok(())
 }
 
-fn run_icons(command: &IconsCommand, emit_json: bool) -> Result<()> {
+fn run_icons(arguments: &Cli, command: &IconsCommand) -> Result<()> {
+    let emit_json = arguments.json;
     match command {
         IconsCommand::Search { query } => {
             let names = icons::search(query).map_err(Failure::from)?;
@@ -408,14 +413,38 @@ fn run_icons(command: &IconsCommand, emit_json: bool) -> Result<()> {
                 names.iter().for_each(|name| println!("{name}"));
             }
         }
+        IconsCommand::Add { name } => {
+            let assets_directory = open_project(arguments)?.assets_directory();
+            let icon = icons::add(name, &assets_directory).map_err(Failure::from)?;
+            if emit_json {
+                println!("{:#}", json!({ "success": true, "icon": icon }));
+            } else {
+                println!("installed {}", icon.src);
+            }
+        }
+        IconsCommand::List => {
+            let assets_directory = open_project(arguments)?.assets_directory();
+            let icons = icons::list(&assets_directory).map_err(Failure::from)?;
+            if emit_json {
+                println!("{:#}", json!({ "icons": icons }));
+            } else {
+                icons.iter().for_each(|icon| println!("{}", icon.src));
+            }
+        }
         IconsCommand::Info { name } => {
-            let info = icons::info(name).map_err(Failure::from)?;
+            // Without a project the icon just reports as not installed.
+            let assets_directory = open_project(arguments)
+                .map_or_else(|_| PathBuf::new(), |project| project.assets_directory());
+            let info = icons::info(name, &assets_directory).map_err(Failure::from)?;
             if emit_json {
                 println!("{:#}", json!(info));
             } else {
                 println!("{} ({})", info.name, info.collection);
                 println!("license  {} {}", info.license, info.license_url);
                 println!("source   {}", info.source);
+                if let Some(src) = &info.src {
+                    println!("src      {src}");
+                }
             }
         }
     }

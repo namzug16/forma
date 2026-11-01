@@ -138,6 +138,10 @@ impl Project {
         self.directory.join(configured_path).components().collect()
     }
 
+    pub fn assets_directory(&self) -> PathBuf {
+        self.resolve(&self.config.assets)
+    }
+
     pub fn frames_directory(&self) -> PathBuf {
         self.resolve(&self.config.frames)
     }
@@ -145,7 +149,7 @@ impl Project {
     /// The source tree that rendering must never write into.
     pub fn is_source_path(&self, path: &Path) -> bool {
         let frames = self.frames_directory();
-        let assets = self.resolve(&self.config.assets);
+        let assets = self.assets_directory();
         path.starts_with(frames)
             || path.starts_with(assets)
             || path == self.resolve(&self.config.tokens)
@@ -169,7 +173,7 @@ impl Project {
     pub fn resources(&self) -> Result<Resources> {
         Ok(Resources {
             tokens: self.tokens()?,
-            assets: Assets::new(self.resolve(&self.config.assets)),
+            assets: Assets::new(self.assets_directory()),
             fonts: FontLibrary::default(),
         })
     }
