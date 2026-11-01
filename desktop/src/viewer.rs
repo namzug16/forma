@@ -17,6 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -71,7 +72,7 @@ pub struct Viewer {
     /// Filled in on paint: input events arrive in window coordinates.
     canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
     drag_position: Option<Point<Pixels>>,
-    /// Dropping it cancels a load that a newer selection or change has replaced.
+    /// Set while loading. Dropping it cancels a load that a newer change has replaced.
     load_task: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
 }
@@ -136,9 +137,13 @@ impl Viewer {
                 .await
                 .unwrap_or_else(|error| Content::Failed(failure_messages(&error)));
             viewer
-                .update(cx, |viewer, cx| viewer.show(content, cx))
+                .update(cx, |viewer, cx| {
+                    viewer.load_task = None;
+                    viewer.show(content, cx);
+                })
                 .ok();
         }));
+        cx.notify();
     }
 
     fn show(&mut self, content: Content, cx: &mut Context<Self>) {
@@ -474,6 +479,24 @@ impl Viewer {
         }
     }
 
+    /// The previous image stays up during a re-render, so this is what says it is stale.
+    fn render_rendering_badge(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .absolute()
+            .top_3()
+            .right_3()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .text_xs()
+            .child(Spinner::new().xsmall().color(cx.theme().muted_foreground))
+            .child("Rendering")
+    }
+
     fn render_zoom_controls(&self, zoom: f32, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .absolute()
@@ -585,6 +608,20 @@ impl Viewer {
             .when_some(viewport, |canvas, viewport| {
                 canvas.child(self.render_zoom_controls(viewport.zoom, cx))
             })
+            .when(matches!(self.content, Content::Loading), |canvas| {
+                canvas.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Spinner::new().large().color(secondary_text)),
+                )
+            })
+            .when(
+                self.load_task.is_some() && self.displayed_frame().is_some(),
+                |canvas| canvas.child(self.render_rendering_badge(cx)),
+            )
             .when(matches!(self.content, Content::Nothing), |canvas| {
                 canvas.child(
                     div()
