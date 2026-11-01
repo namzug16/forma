@@ -18,7 +18,7 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
-use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use notify::{Event, RecommendedWatcher};
@@ -39,6 +39,7 @@ const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 /// Long enough to gather a burst of writes into one render without feeling late.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 
+const ZOOM_BUTTON_FACTOR: f32 = 1.25;
 /// Scroll distance that doubles the zoom is about 70 pixels.
 const ZOOM_PER_SCROLL_PIXEL: f32 = 0.01;
 
@@ -461,12 +462,74 @@ impl Viewer {
         }
     }
 
+    fn zoom_at_canvas_center(&mut self, factor: f32, cx: &mut Context<Self>) {
+        self.zoom_at(factor, self.canvas_bounds.get().center(), cx);
+    }
+
     fn pan(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
         if let Some(mut viewport) = self.current_viewport() {
             viewport.pan(point(delta.x.into(), delta.y.into()));
             self.viewport = Some(viewport);
             cx.notify();
         }
+    }
+
+    fn render_zoom_controls(&self, zoom: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .bottom_4()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                h_flex()
+                    .id("zoom-controls")
+                    .occlude()
+                    .p_1()
+                    .gap_1()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .shadow_md()
+                    .child(
+                        Button::new("zoom-out")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Minus)
+                            .tooltip("Zoom out")
+                            .on_click(cx.listener(|viewer, _, _, cx| {
+                                viewer.zoom_at_canvas_center(1. / ZOOM_BUTTON_FACTOR, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .text_center()
+                            .text_xs()
+                            .child(format!("{:.0}%", zoom * 100.)),
+                    )
+                    .child(
+                        Button::new("zoom-in")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .tooltip("Zoom in")
+                            .on_click(cx.listener(|viewer, _, _, cx| {
+                                viewer.zoom_at_canvas_center(ZOOM_BUTTON_FACTOR, cx);
+                            })),
+                    )
+                    .child(div().w(px(1.)).h_4().bg(cx.theme().border))
+                    .child(
+                        Button::new("zoom-reset")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Maximize)
+                            .tooltip("Reset zoom")
+                            .on_click(cx.listener(|viewer, _, _, cx| viewer.fit_frame(cx))),
+                    ),
+            )
     }
 
     fn render_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -519,6 +582,9 @@ impl Viewer {
                         )
                 },
             )
+            .when_some(viewport, |canvas, viewport| {
+                canvas.child(self.render_zoom_controls(viewport.zoom, cx))
+            })
             .when(matches!(self.content, Content::Nothing), |canvas| {
                 canvas.child(
                     div()
