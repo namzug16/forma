@@ -518,11 +518,13 @@ impl Viewer {
                 0,
                 cx,
             ));
-            rows.push(detail_row(
-                format!("background {}", report["background"]),
-                0,
-                cx,
-            ));
+            if !report["background"].is_null() {
+                rows.push(detail_row(
+                    format!("background {}", report["background"]),
+                    0,
+                    cx,
+                ));
+            }
             let warnings = report["warnings"].as_array().map(Vec::as_slice);
             for warning in warnings.unwrap_or_default() {
                 let message = warning["message"].as_str().unwrap_or_default();
