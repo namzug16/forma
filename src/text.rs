@@ -4,7 +4,7 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fontdb::{Database, Family, ID, Query, Source, Stretch, Style, Weight};
+use fontdb::{Database, Family, ID, Language, Query, Source, Stretch, Style, Weight};
 use rustybuzz::ttf_parser::{GlyphId, OutlineBuilder};
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use tiny_skia::{Path, PathBuilder};
@@ -12,6 +12,7 @@ use tiny_skia::{Path, PathBuilder};
 use crate::assets::Assets;
 use crate::diagnostics::Diagnostic;
 use crate::document::TextAlign;
+use crate::fonts::catalog_family;
 use crate::tokens::ResolvedFont;
 
 #[derive(Debug)]
@@ -72,11 +73,29 @@ impl ProjectFonts {
                     format!("{path} is not a usable font"),
                 ));
             }
-            fonts
-                .paths
-                .extend(ids.into_iter().map(|id| (id, path.clone())));
+            let catalog_name = catalog_family(&resolved)?;
+            for id in ids {
+                let id = match &catalog_name {
+                    Some(name) => fonts.rename_face(id, name),
+                    None => id,
+                };
+                fonts.paths.insert(id, path.clone());
+            }
         }
         Ok(fonts)
+    }
+
+    /// The name goes first, so it is the one reported. fontdb can only replace a face.
+    fn rename_face(&mut self, id: ID, name: &str) -> ID {
+        let mut face = self
+            .database
+            .face(id)
+            .expect("the id was just loaded")
+            .clone();
+        face.families
+            .insert(0, (name.to_owned(), Language::English_UnitedStates));
+        self.database.remove_face(id);
+        self.database.push_face_info(face)
     }
 }
 
@@ -578,6 +597,36 @@ mod tests {
         let layout = FontLibrary::default().layout(&request, &assets).unwrap();
 
         assert!(layout.font_source.ends_with("fonts/nested/Tuffy.ttf"));
+    }
+
+    #[test]
+    fn an_installed_font_answers_to_its_catalog_family_over_its_embedded_name() {
+        let assets_directory = tempfile::tempdir().unwrap();
+        let font_directory = assets_directory.path().join("fonts/renamed");
+        std::fs::create_dir_all(&font_directory).unwrap();
+        let bytes = fixture_assets().read("Tuffy.ttf", "file").unwrap().1;
+        std::fs::write(font_directory.join("latin-400-normal.ttf"), bytes).unwrap();
+        std::fs::write(
+            font_directory.join("font.json"),
+            r#"{ "family": "Catalog Name", "source": "fontsource", "license": null,
+                 "licenseFile": null, "version": null, "upstream": null, "files": [] }"#,
+        )
+        .unwrap();
+        let assets = Assets::new(assets_directory.path().into());
+        let font = ResolvedFont {
+            family: Some("Catalog Name".to_owned()),
+            file: None,
+            ..fixture_font()
+        };
+        let request = TextRequest {
+            text: "text",
+            font: &font,
+            wrap_width: None,
+            align: TextAlign::Left,
+            path: "font",
+        };
+
+        assert!(FontLibrary::default().layout(&request, &assets).is_ok());
     }
 
     #[test]

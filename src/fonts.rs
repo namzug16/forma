@@ -204,6 +204,16 @@ fn read_record(directory: &Path) -> Result<Option<InstalledFont>, Diagnostic> {
     })
 }
 
+/// Fontsource's name for the family of an installed file. The file's embedded name can't be
+/// trusted: static instances of variable fonts keep names like "Noto Sans JP Thin" at any weight.
+pub fn catalog_family(font_file: &Path) -> Result<Option<String>, Diagnostic> {
+    let directory = font_file.parent().expect("font files have a parent");
+    let record = read_record(directory)?;
+    Ok(record
+        .filter(|record| record.source == FontSource::Fontsource.name())
+        .map(|record| record.family))
+}
+
 fn already_installed(family: &str) -> Diagnostic {
     Diagnostic::new(
         "font_already_installed",
