@@ -164,7 +164,8 @@ that cannot render shows its errors for your agent to fix.
 | --- | --- |
 | Two-finger scroll or drag | Pan |
 | Pinch or `Cmd`+scroll | Zoom at the cursor |
-| `Cmd-0` | Fit the frame |
+| Canvas `-` and `+` buttons | Zoom at the canvas center |
+| Canvas reset button or `Cmd-0` | Fit the frame |
 
 ## Development
 
