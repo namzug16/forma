@@ -12,7 +12,7 @@ pub fn report(scene: &Scene, layer_id: Option<&str>) -> Result<Value, Failure> {
         &scene.nodes,
         Affine::IDENTITY,
         scene.frame_area(),
-        1.0,
+        Inherited::ROOT,
         &mut draw_order,
     );
     if let Some(layer_id) = layer_id {
@@ -40,16 +40,30 @@ fn find_layer<'a>(layers: &'a [Value], layer_id: &str) -> Option<&'a Value> {
     })
 }
 
+/// What a node takes from its ancestors.
+#[derive(Clone, Copy)]
+struct Inherited {
+    opacity: f64,
+    visible: bool,
+}
+
+impl Inherited {
+    const ROOT: Self = Self {
+        opacity: 1.0,
+        visible: true,
+    };
+}
+
 fn describe_nodes(
     nodes: &[SceneNode],
     parent: Affine,
     visible_area: Bounds,
-    parent_opacity: f64,
+    inherited: Inherited,
     draw_order: &mut usize,
 ) -> Vec<Value> {
     nodes
         .iter()
-        .map(|node| describe_node(node, parent, visible_area, parent_opacity, draw_order))
+        .map(|node| describe_node(node, parent, visible_area, inherited, draw_order))
         .collect()
 }
 
@@ -57,17 +71,21 @@ fn describe_node(
     node: &SceneNode,
     parent: Affine,
     visible_area: Bounds,
-    parent_opacity: f64,
+    inherited: Inherited,
     draw_order: &mut usize,
 ) -> Value {
     let layout = NodeLayout::of(node, parent, visible_area);
-    let effective_opacity = parent_opacity * node.opacity;
+    let effective = Inherited {
+        opacity: inherited.opacity * node.opacity,
+        visible: inherited.visible && node.visible,
+    };
     let mut layer = json!({
         "id": node.id,
         "drawOrder": *draw_order,
         "visible": node.visible,
+        "effectiveVisible": effective.visible,
         "opacity": node.opacity,
-        "effectiveOpacity": effective_opacity,
+        "effectiveOpacity": effective.opacity,
         "localTransform": node.transform,
         "worldTransform": layout.world,
         "localBounds": node.bounds,
@@ -135,7 +153,7 @@ fn describe_node(
                 children,
                 layout.world,
                 layout.children_visible_area(*clip, visible_area),
-                effective_opacity,
+                effective,
                 draw_order,
             );
             insert(details, "children", json!(children));
@@ -191,5 +209,36 @@ fn print_layers(layers: &[Value], depth: usize) {
             layer["id"].as_str().unwrap_or_default(),
         );
         print_layers(items_of(&layer["children"]), depth + 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::Assets;
+    use crate::document::parse_frame;
+    use crate::scene::{Resources, build};
+    use crate::text::FontLibrary;
+    use crate::tokens::Tokens;
+
+    fn scene_with_hidden_group() -> Scene {
+        let frame = r##"{ "version": 1, "id": "f", "width": 10, "height": 10, "children": [
+            { "id": "hidden", "type": "group", "visible": false, "children": [
+                { "id": "offscreen", "type": "rect", "x": 50, "width": 5, "height": 5,
+                  "fill": { "color": "#FF0000" } } ] } ] }"##;
+        let resources = Resources {
+            tokens: Tokens::parse("{}").unwrap(),
+            assets: Assets::new("/no/assets".into()),
+            fonts: FontLibrary::default(),
+        };
+        build(&parse_frame(frame).unwrap(), &resources).unwrap()
+    }
+
+    #[test]
+    fn a_child_reports_being_hidden_by_its_group() {
+        let report = report(&scene_with_hidden_group(), Some("offscreen")).unwrap();
+
+        assert_eq!(report["layers"][0]["visible"], true);
+        assert_eq!(report["layers"][0]["effectiveVisible"], false);
     }
 }
