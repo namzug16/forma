@@ -1,5 +1,6 @@
 //! Read-only viewer for a Forma project. Agents edit the files; this only looks at them.
 
+mod frame_tree;
 mod viewer;
 
 use gpui_kit::*;
