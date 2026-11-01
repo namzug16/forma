@@ -264,53 +264,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_keeps_only_lucide_results() {
-        let response = SearchResponse {
-            icons: vec!["lucide:star".to_owned(), "mdi:star".to_owned()],
-        };
-
-        assert_eq!(lucide_names(response), ["star"]);
-    }
-
-    #[test]
-    fn names_that_could_escape_a_path_or_url_are_rejected() {
-        for name in ["../secret", "a/b", "a?b", "", "-flag", "Star"] {
-            assert_eq!(validate_name(name).unwrap_err().code, "invalid_icon_name");
-        }
-        assert!(validate_name("arrow-right-2").is_ok());
-    }
-
-    const STAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h9v9z"/></svg>"#;
-
-    #[test]
-    fn installing_keeps_the_exact_bytes_and_records_the_license() {
-        let assets = tempfile::tempdir().unwrap();
-
-        assert_eq!(
-            install("star", STAR.as_bytes(), assets.path()).unwrap(),
-            "icons/lucide/star.svg"
-        );
-
-        let saved = fs::read_to_string(assets.path().join("icons/lucide/star.svg")).unwrap();
-        assert_eq!(saved, STAR);
-        let listed = list(assets.path()).unwrap();
-        assert_eq!(listed[0].license.as_deref(), Some("ISC"));
-    }
-
-    #[test]
-    fn an_existing_asset_is_never_overwritten() {
-        let assets = tempfile::tempdir().unwrap();
-        let path = assets.path().join("icons/lucide/star.svg");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "hand edited").unwrap();
-
-        let error = install("star", STAR.as_bytes(), assets.path()).unwrap_err();
-
-        assert_eq!(error.code, "icon_already_installed");
-        assert_eq!(fs::read_to_string(&path).unwrap(), "hand edited");
-    }
-
-    #[test]
     fn an_invalid_svg_writes_nothing() {
         let assets = tempfile::tempdir().unwrap();
 

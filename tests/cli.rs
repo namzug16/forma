@@ -67,66 +67,227 @@ fn add_project_files(project: &Path) {
     fs::write(project.join("frames/post.json"), FRAME).unwrap();
 }
 
+fn error_code(output: &Output) -> Value {
+    assert!(!output.status.success());
+    json_output(output)["errors"][0]["code"].clone()
+}
+
+fn succeed(directory: &Path, arguments: &[&str]) -> Value {
+    let output = forma(directory, arguments);
+    assert!(
+        output.status.success(),
+        "{arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    json_output(&output)
+}
+
+fn strings(value: &Value) -> Vec<&str> {
+    let items = value.as_array().unwrap();
+    items.iter().map(|item| item.as_str().unwrap()).collect()
+}
+
+/// Rendering must not need the network; the macOS sandbox makes that a real restriction.
+fn render_offline(directory: &Path, frame: &str) -> Output {
+    let forma_binary = env!("CARGO_BIN_EXE_forma");
+    let mut command = if cfg!(target_os = "macos") {
+        let mut sandbox = Command::new("sandbox-exec");
+        sandbox.args([
+            "-p",
+            "(version 1)(allow default)(deny network*)",
+            forma_binary,
+        ]);
+        sandbox
+    } else {
+        Command::new(forma_binary)
+    };
+    command
+        .args(["render", frame, "--json"])
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
+/// Talks to the real Iconify and Fontsource services, so it needs internet access.
 #[test]
-fn installed_icons_and_fonts_render_in_any_frame_from_local_files() {
+fn an_agent_installs_real_icons_and_fonts_and_renders_them_offline() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
     assert!(forma(&root, &["init"]).status.success());
     let project = root.join("forma");
 
-    // The layout `forma icons add` and `forma fonts add` leave behind.
-    let icons = project.join("assets/icons/lucide");
-    fs::create_dir_all(&icons).unwrap();
-    fs::write(
-        icons.join("star.svg"),
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M2 2h20v20z"/></svg>"#,
-    )
-    .unwrap();
-    let font_directory = project.join("assets/fonts/inter");
-    fs::create_dir_all(&font_directory).unwrap();
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for subset in ["latin", "cyrillic"] {
-        let name = format!("{subset}-400-normal.ttf");
-        fs::copy(
-            fixtures.join(format!("Inter-{name}")),
-            font_directory.join(name),
-        )
+    // Icons: the file on disk is exactly what Iconify serves.
+    let found = succeed(&root, &["icons", "search", "star", "--json"]);
+    assert!(strings(&found["icons"]).contains(&"star"));
+    let added = succeed(&root, &["icons", "add", "star", "--json"]);
+    assert_eq!(added["icon"]["src"], "icons/lucide/star.svg");
+    let star_path = project.join("assets/icons/lucide/star.svg");
+    let served = ureq::get("https://api.iconify.design/lucide/star.svg")
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_to_vec()
         .unwrap();
-    }
+    assert_eq!(fs::read(&star_path).unwrap(), served);
+    let installed = succeed(&root, &["icons", "list", "--json"]);
+    assert_eq!(installed["icons"][0]["license"], "ISC");
 
+    let readd = forma(&root, &["icons", "add", "star", "--json"]);
+    assert_eq!(error_code(&readd), "icon_already_installed");
+    assert_eq!(fs::read(&star_path).unwrap(), served);
+    let missing = forma(&root, &["icons", "add", "no-such-icon-x", "--json"]);
+    assert_eq!(error_code(&missing), "icon_not_found");
+    let escaping = forma(&root, &["icons", "add", "../secret", "--json"]);
+    assert_eq!(error_code(&escaping), "invalid_icon_name");
+
+    // Fonts: a real install, then a second weight joining it.
+    let found = succeed(&root, &["fonts", "search", "Inter", "--json"]);
+    let is_catalog_inter =
+        |font: &Value| font["family"] == "Inter" && font["source"] == "fontsource";
+    assert!(
+        found["fonts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(is_catalog_inter)
+    );
+    let info = succeed(&root, &["fonts", "info", "Inter", "--json"]);
+    assert_eq!(info["catalog"]["license"], "OFL-1.1");
+
+    let regular = [
+        "fonts", "add", "Inter", "--weight", "400", "--style", "normal", "--json",
+    ];
+    let added = succeed(&root, &regular);
+    let installed_files = strings(&added["font"]["installed"]);
+    assert!(installed_files.contains(&"latin-400-normal.ttf"));
+    assert!(installed_files.contains(&"cyrillic-400-normal.ttf"));
+    let inter = project.join("assets/fonts/inter");
+    assert!(
+        fs::read_to_string(inter.join("LICENSE"))
+            .unwrap()
+            .contains("Open Font License")
+    );
+    let record: Value =
+        serde_json::from_slice(&fs::read(inter.join("font.json")).unwrap()).unwrap();
+    assert_eq!(record["license"], "OFL-1.1");
+
+    assert_eq!(
+        error_code(&forma(&root, &regular)),
+        "font_already_installed"
+    );
+    succeed(
+        &root,
+        &[
+            "fonts", "add", "Inter", "--weight", "700", "--style", "normal", "--json",
+        ],
+    );
+    let unavailable = forma(
+        &root,
+        &["fonts", "add", "Inter", "--weight", "950", "--json"],
+    );
+    assert_eq!(error_code(&unavailable), "font_variant_unavailable");
+    let unknown = forma(
+        &root,
+        &["fonts", "add", "No Such Family Anywhere", "--json"],
+    );
+    assert_eq!(error_code(&unknown), "font_not_found");
+
+    let checked = succeed(&root, &["fonts", "check", "Inter", "--json"]);
+    assert_eq!(checked["font"]["source"], "project");
+    assert_eq!(checked["font"]["weights"], json!([400, 700]));
+
+    // Its files embed the name "Noto Sans JP Thin", and its catalog lists numbered slices.
+    let added = succeed(
+        &root,
+        &[
+            "fonts",
+            "add",
+            "Noto Sans JP",
+            "--weight",
+            "400",
+            "--subset",
+            "japanese,latin",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        strings(&added["font"]["installed"]),
+        ["japanese-400-normal.ttf", "latin-400-normal.ttf"]
+    );
+
+    // Everything installed works in every frame with the network gone.
     for frame in ["one", "two"] {
         let source = format!(
-            r##"{{ "version": 1, "id": "{frame}", "width": 200, "height": 100, "children": [
+            r##"{{ "version": 1, "id": "{frame}", "width": 400, "height": 200, "children": [
                 {{ "id": "star", "type": "svg", "src": "icons/lucide/star.svg", "width": 48,
                    "height": 48, "color": "#FF0000" }},
-                {{ "id": "title", "type": "text", "text": "Hello Привет", "y": 50,
-                   "font": {{ "family": "Inter", "size": 20 }},
+                {{ "id": "latin", "type": "text", "text": "Hello Привет", "y": 60,
+                   "font": {{ "family": "Inter", "size": 20, "weight": 700 }},
+                   "fill": {{ "color": "#000000" }} }},
+                {{ "id": "japanese", "type": "text", "text": "こんにちは Noto", "y": 100,
+                   "font": {{ "family": "Noto Sans JP", "size": 20 }},
                    "fill": {{ "color": "#000000" }} }} ] }}"##
         );
         fs::write(project.join(format!("frames/{frame}.json")), source).unwrap();
-        let render = forma(&root, &["render", frame, "--json"]);
+        let render = render_offline(&root, frame);
         assert!(
             render.status.success(),
             "{}",
             String::from_utf8_lossy(&render.stderr)
         );
+        assert_eq!(json_output(&render)["warnings"], json!([]));
     }
 
-    let report = json_output(&forma(
-        &root,
-        &["inspect", "one", "--layer", "title", "--json"],
-    ));
-    let font_source = report["layers"][0]["fontSource"].as_str().unwrap();
-    assert!(font_source.contains("assets/fonts/inter"), "{font_source}");
+    let canvas = tiny_skia::Pixmap::load_png(project.join("output/one.png")).unwrap();
+    let is_red = |pixel: &tiny_skia::PremultipliedColorU8| {
+        pixel.red() > 200 && pixel.green() == 0 && pixel.alpha() == 255
+    };
+    assert!(canvas.pixels().iter().any(is_red));
 
-    let found = json_output(&forma(&root, &["fonts", "check", "Inter", "--json"]));
-    assert_eq!(found["font"]["source"], "project");
-    let missing = forma(
-        &root,
-        &["fonts", "check", "No Such Family Anywhere", "--json"],
+    let report = succeed(&root, &["inspect", "one", "--json"]);
+    let font_source = report["layers"][2]["fontSource"].as_str().unwrap();
+    assert!(
+        font_source.contains("assets/fonts/noto-sans-jp"),
+        "{font_source}"
     );
-    assert!(!missing.status.success());
-    assert_eq!(json_output(&missing)["errors"][0]["code"], "font_not_found");
+}
+
+/// Copies a real system font, which only macOS guarantees by name.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_system_font_is_copied_only_after_accepting_its_license() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    assert!(forma(&root, &["init"]).status.success());
+    let add = [
+        "fonts",
+        "add",
+        "Helvetica Neue",
+        "--from",
+        "system",
+        "--json",
+    ];
+
+    assert_eq!(error_code(&forma(&root, &add)), "font_license_not_accepted");
+    let source = succeed(&root, &["fonts", "check", "Helvetica Neue", "--json"]);
+    assert_eq!(source["font"]["source"], "system");
+
+    let accepted = [&add[..], &["--accept-license"]].concat();
+    let copied = succeed(&root, &accepted);
+    assert_eq!(strings(&copied["font"]["installed"]), ["HelveticaNeue.ttc"]);
+    assert!(
+        copied["font"]["license"]
+            .as_str()
+            .unwrap()
+            .contains("Copyright")
+    );
+    let source = succeed(&root, &["fonts", "check", "Helvetica Neue", "--json"]);
+    assert_eq!(source["font"]["source"], "project");
+
+    assert_eq!(
+        error_code(&forma(&root, &accepted)),
+        "font_already_installed"
+    );
 }
 
 #[test]

@@ -600,36 +600,6 @@ mod tests {
     }
 
     #[test]
-    fn an_installed_font_answers_to_its_catalog_family_over_its_embedded_name() {
-        let assets_directory = tempfile::tempdir().unwrap();
-        let font_directory = assets_directory.path().join("fonts/renamed");
-        std::fs::create_dir_all(&font_directory).unwrap();
-        let bytes = fixture_assets().read("Tuffy.ttf", "file").unwrap().1;
-        std::fs::write(font_directory.join("latin-400-normal.ttf"), bytes).unwrap();
-        std::fs::write(
-            font_directory.join("font.json"),
-            r#"{ "family": "Catalog Name", "source": "fontsource", "license": null,
-                 "licenseFile": null, "version": null, "upstream": null, "files": [] }"#,
-        )
-        .unwrap();
-        let assets = Assets::new(assets_directory.path().into());
-        let font = ResolvedFont {
-            family: Some("Catalog Name".to_owned()),
-            file: None,
-            ..fixture_font()
-        };
-        let request = TextRequest {
-            text: "text",
-            font: &font,
-            wrap_width: None,
-            align: TextAlign::Left,
-            path: "font",
-        };
-
-        assert!(FontLibrary::default().layout(&request, &assets).is_ok());
-    }
-
-    #[test]
     fn a_corrupt_project_font_is_an_error_rather_than_a_missing_family() {
         let assets_directory = tempfile::tempdir().unwrap();
         let fonts_directory = assets_directory.path().join("fonts");

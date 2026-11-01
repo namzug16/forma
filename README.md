@@ -146,6 +146,11 @@ it.
 The same inputs, fonts and Forma version on the same platform produce identical bytes. System fonts
 vary between machines, so use font files for output that must match everywhere.
 
+## Development
+
+`cargo test` needs internet access: the install tests download from the real Iconify and Fontsource
+services, so a change on their side fails a test instead of reaching users.
+
 ## License
 
 MIT. `tests/fixtures/Tuffy.ttf` is public domain; see `tests/fixtures/Tuffy-LICENSE.txt`.

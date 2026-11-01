@@ -544,39 +544,6 @@ mod tests {
         assert_eq!(missing.code, "font_not_found");
     }
 
-    fn record(family: &str) -> InstalledFont {
-        InstalledFont {
-            family: family.to_owned(),
-            source: "fontsource".to_owned(),
-            license: Some("OFL-1.1".to_owned()),
-            license_file: None,
-            version: None,
-            upstream: None,
-            files: BTreeSet::new(),
-        }
-    }
-
-    #[test]
-    fn adding_files_later_keeps_earlier_ones_and_never_replaces_a_file() {
-        let directory = tempfile::tempdir().unwrap();
-        let font = directory.path().join("inter");
-
-        let first = [("latin-400-normal.ttf".to_owned(), b"first".to_vec())];
-        install_files(&font, record("Inter"), &first).unwrap();
-        let second = [
-            ("latin-400-normal.ttf".to_owned(), b"changed".to_vec()),
-            ("latin-700-normal.ttf".to_owned(), b"bold".to_vec()),
-        ];
-        install_files(&font, record("Inter"), &second).unwrap();
-
-        let saved = read_record(&font).unwrap().unwrap();
-        assert_eq!(saved.files.len(), 2);
-        assert_eq!(
-            fs::read(font.join("latin-400-normal.ttf")).unwrap(),
-            b"first"
-        );
-    }
-
     #[test]
     fn a_download_that_is_not_a_font_is_rejected() {
         assert_eq!(
