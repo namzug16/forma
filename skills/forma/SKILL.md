@@ -18,6 +18,9 @@ If `forma/config.json` exists in the repo, skip to [Designing](#designing). Othe
 [references/format.md](references/format.md) before writing your first frame: it covers what the
 schema can't, such as how anchors, groups, masks, gradients and fonts behave, plus every command.
 
+For generated visuals such as patterns, particles and noise textures, write an artwork instead of
+thousands of layers: read [references/artworks.md](references/artworks.md).
+
 ## Setting up
 
 Keep the repo's own files out of this. `forma init` only adds `forma/` and one `.gitignore` line, so

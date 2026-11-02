@@ -29,6 +29,7 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 | `forma`, `forma list` | List frames with sizes and validity. |
 | `forma render FRAME [--output PATH \| --clipboard] [--scale N]` | Render one frame to a file, or to the clipboard without writing a file. |
 | `forma render --all` | Render every frame. |
+| `forma generate [ARTWORK] [--seed N]` | Run one artwork, or every artwork, into `forma/assets/artworks/`. |
 | `forma validate FRAME`, `forma validate --all` | Check frames without rendering. |
 | `forma inspect FRAME [--layer ID]` | Report hierarchy, transforms, bounds and resolved values. |
 | `forma fonts list [--source project\|system]` | List families with their weights and styles. |
@@ -134,6 +135,40 @@ ignored, only `data:` images load, and `<text>` is rejected; convert it to paths
 
 **Scale.** `--scale` must produce whole pixels. Rasters are limited to 16384 pixels per side and
 100 million pixels in total, assets to 64 MB, and group nesting to 64 levels.
+
+## Artworks
+
+An artwork is a Lua script that draws an image, for visuals that would take thousands of JSON
+layers: patterns, particles, noise textures. `forma/artworks/spiral.lua` becomes
+`forma/assets/artworks/spiral.png`, which frames use like any image, with
+`"src": "artworks/spiral.png"`. Commit the PNG. `forma render` never runs scripts, so run
+`forma generate` again after changing a script or the tokens it reads.
+
+```lua
+return {
+  width = 1080,          -- or a token, such as "$sizes.hero"
+  height = 1080,
+  seed = 42,             -- `--seed N` replaces it for one run
+  draw = function(canvas, tokens, random, noise)
+    canvas:clear("$colors.background")
+    for turn = 1, 300 do
+      local distance = turn * 1.5
+      canvas:circle {
+        x = 540 + distance * math.cos(turn / 8),
+        y = 540 + distance * math.sin(turn / 8),
+        radius = 4 + 12 * random(),
+        fill = "$colors.primary",
+        opacity = 0.7,
+      }
+    end
+  end,
+}
+```
+
+The full API is in [skills/forma/references/artworks.md](skills/forma/references/artworks.md).
+Scripts run offline in a sandbox with no file, network or clock access, and with limits on memory
+and instructions. The same script, tokens and seed give identical pixels on the same Forma build
+and platform; floating-point math can differ slightly between platforms.
 
 ## Tokens
 
