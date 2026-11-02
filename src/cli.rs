@@ -2,12 +2,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::artwork::{self, ArtworkFile};
 use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
@@ -20,6 +22,7 @@ use crate::project::{self, Project};
 use crate::renderer;
 use crate::scene::Resources;
 use crate::text::FontLibrary;
+use crate::tokens::Tokens;
 
 #[derive(Parser)]
 #[command(name = "forma", about = "Agent-first, headless 2D design engine")]
@@ -66,6 +69,14 @@ pub enum Command {
         /// Copy the rendered bitmap to the clipboard instead of writing a file
         #[arg(long, conflicts_with_all = ["all", "output"])]
         clipboard: bool,
+    },
+    /// Run artworks and write their PNGs into the assets directory
+    Generate {
+        /// Artwork name relative to the artworks directory (default: every artwork)
+        artwork: Option<String>,
+        /// Replaces the seed the artwork declares
+        #[arg(long)]
+        seed: Option<i64>,
     },
     /// Check frames without rendering
     Validate {
@@ -175,6 +186,9 @@ pub fn run(arguments: Cli) -> Result<ExitCode> {
                 copy_to_clipboard: *clipboard,
             };
             return run_render(&arguments, frame.as_deref(), &options);
+        }
+        Some(Command::Generate { artwork, seed }) => {
+            return run_generate(&arguments, artwork.as_deref(), *seed);
         }
         Some(Command::Validate { frame, .. }) => {
             return run_validate(&arguments, frame.as_deref());
@@ -309,6 +323,98 @@ fn error_diagnostics(error: &anyhow::Error) -> Vec<Diagnostic> {
         || vec![Diagnostic::new("error", format!("{error:#}"))],
         |failure| failure.0.clone(),
     )
+}
+
+#[derive(Serialize)]
+struct GenerateResult {
+    success: bool,
+    artwork: String,
+    output: PathBuf,
+    width: u32,
+    height: u32,
+    seed: i64,
+}
+
+fn run_generate(
+    arguments: &Cli,
+    reference: Option<&str>,
+    seed_override: Option<i64>,
+) -> Result<ExitCode> {
+    let project = open_project(arguments)?;
+    let tokens = Rc::new(project.tokens()?);
+
+    if let Some(reference) = reference {
+        let file = artwork::resolve_reference(&project, reference)?;
+        let result = generate_artwork(&project, &tokens, &file, seed_override)?;
+        print_generate_result(&result, arguments.json);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut all_succeeded = true;
+    let mut results = Vec::new();
+    for file in artwork::list(&project)? {
+        match generate_artwork(&project, &tokens, &file, seed_override) {
+            Ok(result) => {
+                if !arguments.json {
+                    print_generate_result(&result, false);
+                }
+                results.push(json!(result));
+            }
+            Err(error) => {
+                all_succeeded = false;
+                eprintln!("{}: error: {error:#}", file.display_name());
+                results.push(json!({
+                    "success": false,
+                    "artwork": file.display_name(),
+                    "errors": error_diagnostics(&error),
+                }));
+            }
+        }
+    }
+    if arguments.json {
+        println!(
+            "{:#}",
+            json!({ "success": all_succeeded, "results": results })
+        );
+    }
+    Ok(if all_succeeded {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn generate_artwork(
+    project: &Project,
+    tokens: &Rc<Tokens>,
+    file: &ArtworkFile,
+    seed_override: Option<i64>,
+) -> Result<GenerateResult> {
+    let generated = artwork::generate(file, Rc::clone(tokens), seed_override)?;
+    let output = project.artwork_output_path(&file.relative_path);
+    renderer::write_png(&generated.canvas, &output)?;
+    Ok(GenerateResult {
+        success: true,
+        artwork: file.display_name(),
+        output,
+        width: generated.canvas.width(),
+        height: generated.canvas.height(),
+        seed: generated.seed,
+    })
+}
+
+fn print_generate_result(result: &GenerateResult, emit_json: bool) {
+    if emit_json {
+        println!("{:#}", json!(result));
+    } else {
+        println!(
+            "{} ({}×{}, seed {})",
+            result.output.display(),
+            result.width,
+            result.height,
+            result.seed
+        );
+    }
 }
 
 #[derive(Serialize)]

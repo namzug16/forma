@@ -291,6 +291,70 @@ fn a_system_font_is_copied_only_after_accepting_its_license() {
 }
 
 #[test]
+fn an_artwork_goes_from_init_through_generate_into_a_frame() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let project = root.join("forma");
+    assert!(forma(&root, &["init"]).status.success());
+    fs::write(
+        project.join("frames/poster.json"),
+        r#"{ "version": 1, "id": "poster", "width": 100, "height": 100, "children": [
+            { "id": "art", "type": "image", "src": "artworks/example.png",
+              "x": 0, "y": 0, "width": 100, "height": 100 } ] }"#,
+    )
+    .unwrap();
+
+    // Rendering never runs a script, it only says what to do.
+    let missing = forma(&root, &["render", "poster"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("forma generate"));
+
+    let generated = forma(&root, &["generate", "example", "--json"]);
+    assert!(generated.status.success());
+    let result = json_output(&generated);
+    assert_eq!(result["seed"], json!(7));
+    let output = project.join("assets/artworks/example.png");
+    assert_eq!(result["output"], json!(output));
+    assert_eq!(png_size(&output), (1080, 1080));
+    let first_generation = fs::read(&output).unwrap();
+
+    assert!(forma(&root, &["generate"]).status.success());
+    assert_eq!(fs::read(&output).unwrap(), first_generation);
+    assert!(forma(&root, &["generate", "--seed", "8"]).status.success());
+    assert_ne!(fs::read(&output).unwrap(), first_generation);
+    assert!(forma(&root, &["render", "poster"]).status.success());
+
+    // One broken artwork must not hide the others, and must fail the run.
+    fs::write(project.join("artworks/broken.lua"), "return 1").unwrap();
+    let batch = forma(&root, &["generate", "--json"]);
+    assert!(!batch.status.success());
+    let batch = json_output(&batch);
+    assert_eq!(batch["results"][0]["artwork"], json!("broken.lua"));
+    assert_eq!(batch["results"][0]["success"], json!(false));
+    assert_eq!(batch["results"][1]["success"], json!(true));
+
+    let outside = forma(&root, &["generate", "../frames/poster"]);
+    assert!(!outside.status.success());
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("invalid_artwork_reference"));
+}
+
+#[test]
+fn projects_created_before_artworks_still_load() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    assert!(forma(&root, &["init"]).status.success());
+    let config_path = root.join("forma/config.json");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        config.replace("  \"artworks\": \"./artworks\",\n", ""),
+    )
+    .unwrap();
+    assert!(forma(&root, &["list"]).status.success());
+    assert!(forma(&root, &["generate", "example"]).status.success());
+}
+
+#[test]
 fn a_frame_goes_from_init_through_validate_render_and_inspect() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
