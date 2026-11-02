@@ -34,6 +34,7 @@ use crate::viewport::Viewport;
 const ICON_SIZE: f32 = 14.;
 const TREE_ROW_HEIGHT: f32 = 28.;
 const FRAME_LABEL_OFFSET: f32 = 20.;
+const LAYER_ROW_PADDING: f32 = 8.;
 /// Leaves room for the window's traffic lights above the panels' own content.
 const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
@@ -66,6 +67,8 @@ pub struct Viewer {
     tree_state: Entity<TreeState>,
     collapsed_folders: HashSet<SharedString>,
     selection: Option<Selection>,
+    /// The layer outlined on the canvas; ids are unique within a frame.
+    highlighted_layer_id: Option<String>,
     content: Content,
     /// `None` while the frame simply fits the canvas, until the user pans or zooms.
     viewport: Option<Viewport>,
@@ -106,6 +109,7 @@ impl Viewer {
             tree_state,
             collapsed_folders: HashSet::new(),
             selection: None,
+            highlighted_layer_id: None,
             content: Content::Nothing,
             viewport: None,
             canvas_bounds: Rc::default(),
@@ -118,6 +122,7 @@ impl Viewer {
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         if self.selection.as_ref() != Some(&selection) {
             self.selection = Some(selection);
+            self.highlighted_layer_id = None;
             self.viewport = None;
             self.show(Content::Loading, cx);
             self.load_selection(cx);
@@ -151,6 +156,15 @@ impl Viewer {
         if let Content::Frame(frame) = replaced {
             // GPUI keeps every image in its atlas until told otherwise.
             cx.drop_image(frame.image, None);
+        }
+        if let Content::Frame(frame) = &self.content {
+            let layer_still_exists = self
+                .highlighted_layer_id
+                .as_ref()
+                .is_some_and(|id| layer_bounds(&frame.report["layers"], id).is_some());
+            if !layer_still_exists {
+                self.highlighted_layer_id = None;
+            }
         }
         cx.notify();
     }
@@ -318,6 +332,7 @@ impl Viewer {
                 .any(|file| file.relative_path.as_ref() == Some(selected_path));
             if !still_exists {
                 self.selection = None;
+                self.highlighted_layer_id = None;
                 self.viewport = None;
                 self.load_task = None;
                 self.show(Content::Nothing, cx);
@@ -480,6 +495,40 @@ impl Viewer {
     }
 
     /// The previous image stays up during a re-render, so this is what says it is stale.
+    fn toggle_layer_highlight(&mut self, layer_id: String, cx: &mut Context<Self>) {
+        let is_highlighted = self.highlighted_layer_id.as_ref() == Some(&layer_id);
+        self.highlighted_layer_id = (!is_highlighted).then_some(layer_id);
+        cx.notify();
+    }
+
+    /// Drawn over the image, so highlighting never re-renders the frame. The wrapper clips the
+    /// outline to the frame, like the frame clips its layers.
+    fn render_layer_highlight(&self, viewport: Viewport) -> Option<impl IntoElement> {
+        let frame = self.displayed_frame()?;
+        let layer_id = self.highlighted_layer_id.as_ref()?;
+        let bounds = layer_bounds(&frame.report["layers"], layer_id)?;
+        let zoom = viewport.zoom;
+        Some(
+            div()
+                .absolute()
+                .left(px(viewport.offset.x))
+                .top(px(viewport.offset.y))
+                .w(px(frame.width * zoom))
+                .h(px(frame.height * zoom))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(bounds.origin.x * zoom))
+                        .top(px(bounds.origin.y * zoom))
+                        .w(px(bounds.size.width * zoom))
+                        .h(px(bounds.size.height * zoom))
+                        .border_2()
+                        .border_color(style::layer_highlight()),
+                ),
+        )
+    }
+
     fn render_rendering_badge(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .absolute()
@@ -605,6 +654,7 @@ impl Viewer {
                         )
                 },
             )
+            .children(viewport.and_then(|viewport| self.render_layer_highlight(viewport)))
             .when_some(viewport, |canvas, viewport| {
                 canvas.child(self.render_zoom_controls(viewport.zoom, cx))
             })
@@ -773,6 +823,49 @@ impl Viewer {
             )
     }
 
+    fn push_layer_rows(
+        &self,
+        layers: &Value,
+        depth: usize,
+        rows: &mut Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) {
+        for layer in layers.as_array().map(Vec::as_slice).unwrap_or_default() {
+            let layer_id = layer["id"].as_str().unwrap_or_default().to_owned();
+            let is_highlighted = self.highlighted_layer_id.as_ref() == Some(&layer_id);
+            rows.push(
+                h_flex()
+                    .id(SharedString::from(format!("layer-{layer_id}")))
+                    .h(px(TREE_ROW_HEIGHT))
+                    .pl(px(LAYER_ROW_PADDING + 16. * depth as f32))
+                    .pr(px(LAYER_ROW_PADDING))
+                    .mx(px(-LAYER_ROW_PADDING))
+                    .gap_2()
+                    .rounded(cx.theme().radius)
+                    .text_xs()
+                    .cursor_pointer()
+                    .when(is_highlighted, |row| row.bg(cx.theme().list_active))
+                    .when(!is_highlighted, |row| {
+                        row.hover(|row| row.bg(cx.theme().list_hover))
+                    })
+                    .child(icon(
+                        layer_icon(layer["type"].as_str().unwrap_or_default()),
+                        if is_highlighted {
+                            style::layer_highlight().into()
+                        } else {
+                            cx.theme().muted_foreground
+                        },
+                    ))
+                    .child(div().min_w_0().truncate().child(layer_id.clone()))
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.toggle_layer_highlight(layer_id.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+            self.push_layer_rows(&layer["children"], depth + 1, rows, cx);
+        }
+    }
+
     fn render_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut sections = Vec::new();
         if let Some(frame) = self.displayed_frame() {
@@ -811,7 +904,7 @@ impl Viewer {
                 );
             }
             let mut layer_rows = Vec::new();
-            push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
+            self.push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
             sections.push(
                 detail_section("Layers", cx)
                     .border_b_0()
@@ -993,29 +1086,20 @@ fn layer_icon(kind: &str) -> IconName {
     }
 }
 
-fn push_layer_rows(layers: &Value, depth: usize, rows: &mut Vec<AnyElement>, cx: &App) {
-    for layer in layers.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let secondary_text = cx.theme().muted_foreground;
-        rows.push(
-            h_flex()
-                .h(px(TREE_ROW_HEIGHT))
-                .pl(px(16. * depth as f32))
-                .gap_2()
-                .text_xs()
-                .child(icon(
-                    layer_icon(layer["type"].as_str().unwrap_or_default()),
-                    secondary_text,
-                ))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .child(layer["id"].as_str().unwrap_or_default().to_owned()),
-                )
-                .into_any_element(),
-        );
-        push_layer_rows(&layer["children"], depth + 1, rows, cx);
-    }
+/// The box around a layer in frame units. This is not `clippedBounds`, which is empty for a
+/// line with no height even though the line is drawn.
+fn layer_bounds(layers: &Value, layer_id: &str) -> Option<Bounds<f32>> {
+    layers.as_array()?.iter().find_map(|layer| {
+        if layer["id"] != layer_id {
+            return layer_bounds(&layer["children"], layer_id);
+        }
+        let bounds = &layer["worldBounds"];
+        let number = |key: &str| bounds[key].as_f64().map(|value| value as f32);
+        Some(Bounds::new(
+            point(number("x")?, number("y")?),
+            size(number("width")?, number("height")?),
+        ))
+    })
 }
 
 /// One line per diagnostic, in the same words the CLI uses.
@@ -1061,10 +1145,43 @@ impl Render for Viewer {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{Hsla, rgb};
+    use gpui_kit::{Bounds, Hsla, point, rgb, size};
     use serde_json::{Value, json};
 
-    use super::describe_paint;
+    use super::{describe_paint, layer_bounds};
+
+    fn layers() -> Value {
+        json!([{
+            "id": "badge",
+            "worldBounds": { "x": 10, "y": 20, "width": 30, "height": 40 },
+            "children": [{
+                "id": "rule",
+                "worldBounds": { "x": 12, "y": 22, "width": 26, "height": 0 },
+                "clippedBounds": null
+            }]
+        }])
+    }
+
+    #[test]
+    fn top_level_layers_report_their_bounds() {
+        assert_eq!(
+            layer_bounds(&layers(), "badge"),
+            Some(Bounds::new(point(10., 20.), size(30., 40.)))
+        );
+    }
+
+    #[test]
+    fn nested_lines_with_no_height_still_have_bounds() {
+        assert_eq!(
+            layer_bounds(&layers(), "rule"),
+            Some(Bounds::new(point(12., 22.), size(26., 0.)))
+        );
+    }
+
+    #[test]
+    fn unknown_layers_have_no_bounds() {
+        assert_eq!(layer_bounds(&layers(), "missing"), None);
+    }
 
     #[test]
     fn solid_paints_show_their_color() {

@@ -19,6 +19,11 @@ pub fn canvas_background() -> Rgba {
     rgb(0x1e1e1e)
 }
 
+/// Vivid enough to stay visible on most designs.
+pub fn layer_highlight() -> Rgba {
+    rgb(0xff2d9b)
+}
+
 /// The app is always dark, whatever the system appearance is.
 pub fn apply_dark_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
