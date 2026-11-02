@@ -35,6 +35,7 @@ const ICON_SIZE: f32 = 14.;
 const TREE_ROW_HEIGHT: f32 = 28.;
 const FRAME_LABEL_OFFSET: f32 = 20.;
 const LAYER_ROW_PADDING: f32 = 8.;
+const LAYER_TAG_HEIGHT: f32 = 18.;
 /// Leaves room for the window's traffic lights above the panels' own content.
 const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
@@ -500,30 +501,54 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Drawn over the image, so highlighting never re-renders the frame. The wrapper clips the
-    /// outline to the frame, like the frame clips its layers.
+    /// Drawn over the image, so highlighting never re-renders the frame. The outline is clipped
+    /// to the frame like the layers are, but the tag is not, so it survives at the frame's edge.
     fn render_layer_highlight(&self, viewport: Viewport) -> Option<impl IntoElement> {
         let frame = self.displayed_frame()?;
-        let layer_id = self.highlighted_layer_id.as_ref()?;
-        let bounds = layer_bounds(&frame.report["layers"], layer_id)?;
+        let layer_id = self.highlighted_layer_id.clone()?;
+        let bounds = layer_bounds(&frame.report["layers"], &layer_id)?;
         let zoom = viewport.zoom;
+        // A layer overhanging the frame keeps its tag on the part that can be seen.
+        let tag_left = viewport.offset.x + (bounds.origin.x * zoom).max(0.);
+        let tag_top = viewport.offset.y + (bounds.origin.y * zoom).max(0.) - LAYER_TAG_HEIGHT;
         Some(
             div()
                 .absolute()
-                .left(px(viewport.offset.x))
-                .top(px(viewport.offset.y))
-                .w(px(frame.width * zoom))
-                .h(px(frame.height * zoom))
-                .overflow_hidden()
+                .size_full()
                 .child(
                     div()
                         .absolute()
-                        .left(px(bounds.origin.x * zoom))
-                        .top(px(bounds.origin.y * zoom))
-                        .w(px(bounds.size.width * zoom))
-                        .h(px(bounds.size.height * zoom))
-                        .border_2()
-                        .border_color(style::layer_highlight()),
+                        .left(px(viewport.offset.x))
+                        .top(px(viewport.offset.y))
+                        .w(px(frame.width * zoom))
+                        .h(px(frame.height * zoom))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(bounds.origin.x * zoom))
+                                .top(px(bounds.origin.y * zoom))
+                                .w(px(bounds.size.width * zoom))
+                                .h(px(bounds.size.height * zoom))
+                                .border_2()
+                                .border_color(style::layer_highlight()),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(tag_left))
+                        .top(px(tag_top))
+                        .h(px(LAYER_TAG_HEIGHT))
+                        .px_1()
+                        .flex()
+                        .items_center()
+                        .whitespace_nowrap()
+                        .bg(style::layer_highlight())
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(0xffffff))
+                        .child(layer_id),
                 ),
         )
     }
