@@ -265,22 +265,25 @@ fn draw_image(
     );
 }
 
-/// Fits the SVG inside the box without distorting it, centered.
 fn draw_svg(canvas: &mut Pixmap, tree: &Tree, bounds: Bounds, world: Affine) {
+    let transform = skia_transform(svg_to_box(tree, bounds).then(world));
+    resvg::render(tree, transform, &mut canvas.as_mut());
+}
+
+/// Fits the SVG inside the box without distorting it, centered.
+pub fn svg_to_box(tree: &Tree, bounds: Bounds) -> Affine {
     let (svg_width, svg_height) = (
         f64::from(tree.size().width()),
         f64::from(tree.size().height()),
     );
     let scale = (bounds.width / svg_width).min(bounds.height / svg_height);
-    let svg_to_box = Affine::scale(scale, scale).then(Affine::translate(
+    Affine::scale(scale, scale).then(Affine::translate(
         bounds.x + (bounds.width - svg_width * scale) / 2.0,
         bounds.y + (bounds.height - svg_height * scale) / 2.0,
-    ));
-    let transform = skia_transform(svg_to_box.then(world));
-    resvg::render(tree, transform, &mut canvas.as_mut());
+    ))
 }
 
-fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {
+pub fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {
     let premultiply =
         |channel: u8, alpha: u8| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8;
     let mut premultiplied = image.rgba.clone();
@@ -402,6 +405,22 @@ fn fill_path(
     );
 }
 
+/// The gradient's start and end. CSS gradient length: stops 0 and 1 land exactly on the box's far
+/// corners.
+pub fn linear_gradient_line(angle: f64, bounds: Bounds) -> ((f64, f64), (f64, f64)) {
+    let (sine, cosine) = angle.to_radians().sin_cos();
+    let half_length = (bounds.width * sine.abs() + bounds.height * cosine.abs()) / 2.0;
+    let (center_x, center_y) = (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
+    let (offset_x, offset_y) = (sine * half_length, -cosine * half_length);
+    (
+        (center_x - offset_x, center_y - offset_y),
+        (center_x + offset_x, center_y + offset_y),
+    )
+}
+
 /// `None` when the paint cannot produce color for this box, such as a gradient on a zero-size one.
 fn shader(paint: &Paint, bounds: Bounds) -> Option<Shader<'static>> {
     if !matches!(paint, Paint::Solid { .. }) && (bounds.width <= 0.0 || bounds.height <= 0.0) {
@@ -410,17 +429,10 @@ fn shader(paint: &Paint, bounds: Bounds) -> Option<Shader<'static>> {
     match paint {
         Paint::Solid { color } => Some(Shader::SolidColor(skia_color(*color))),
         Paint::LinearGradient { angle, stops } => {
-            // CSS gradient length: stops 0 and 1 land exactly on the box's far corners.
-            let (sine, cosine) = angle.to_radians().sin_cos();
-            let half_length = (bounds.width * sine.abs() + bounds.height * cosine.abs()) / 2.0;
-            let (center_x, center_y) = (
-                bounds.x + bounds.width / 2.0,
-                bounds.y + bounds.height / 2.0,
-            );
-            let (offset_x, offset_y) = (sine * half_length, -cosine * half_length);
+            let ((start_x, start_y), (end_x, end_y)) = linear_gradient_line(*angle, bounds);
             LinearGradient::new(
-                Point::from_xy((center_x - offset_x) as f32, (center_y - offset_y) as f32),
-                Point::from_xy((center_x + offset_x) as f32, (center_y + offset_y) as f32),
+                Point::from_xy(start_x as f32, start_y as f32),
+                Point::from_xy(end_x as f32, end_y as f32),
                 skia_stops(stops),
                 SpreadMode::Pad,
                 Transform::identity(),
