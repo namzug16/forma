@@ -8,6 +8,7 @@
 | `forma`, `forma list` | List frames with sizes and validity. |
 | `forma render FRAME [--output PATH \| --clipboard] [--scale N]` | Render one frame to a file, or to the clipboard without writing a file. |
 | `forma render --all` | Render every frame. |
+| `forma generate [ARTWORK] [--seed N]` | Run one artwork, or every artwork, into `forma/assets/artworks/`. See [artworks.md](artworks.md). |
 | `forma validate FRAME`, `forma validate --all` | Check frames without rendering. |
 | `forma inspect FRAME [--layer ID]` | Report hierarchy, transforms, bounds and resolved values. |
 | `forma fonts list [--source project\|system]` | List families with their weights and styles. |
