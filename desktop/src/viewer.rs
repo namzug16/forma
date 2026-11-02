@@ -18,7 +18,7 @@ use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use notify::{Event, RecommendedWatcher};
@@ -44,10 +44,19 @@ const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
 /// Long enough to gather a burst of writes into one render without feeling late.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+const COPIED_NOTICE_DURATION: Duration = Duration::from_secs(2);
 
 const ZOOM_BUTTON_FACTOR: f32 = 1.25;
 /// Scroll distance that doubles the zoom is about 70 pixels.
 const ZOOM_PER_SCROLL_PIXEL: f32 = 0.01;
+
+/// How the last "Export to SVG" went.
+enum SvgExport {
+    Idle,
+    Running,
+    Copied,
+    Failed(String),
+}
 
 /// What the main area shows for the current selection.
 enum Content {
@@ -86,6 +95,9 @@ pub struct Viewer {
     /// Filled in on paint: input events arrive in window coordinates.
     canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
     drag_position: Option<Point<Pixels>>,
+    svg_export: SvgExport,
+    /// Dropping it abandons an export, so a late one can't overwrite the clipboard.
+    svg_export_task: Option<Task<()>>,
     /// Set while loading. Dropping it cancels a load that a newer change has replaced.
     load_task: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
@@ -126,6 +138,8 @@ impl Viewer {
             viewport: None,
             canvas_bounds: Rc::default(),
             drag_position: None,
+            svg_export: SvgExport::Idle,
+            svg_export_task: None,
             load_task: None,
             _subscriptions: subscriptions,
         };
@@ -138,6 +152,7 @@ impl Viewer {
         if self.selection.as_ref() != Some(&selection) {
             self.selection = Some(selection);
             self.highlighted_layer_id = None;
+            self.reset_svg_export();
             self.viewport = None;
             self.show(Content::Loading, cx);
             self.load_selection(cx);
@@ -312,6 +327,7 @@ impl Viewer {
         if !still_exists {
             self.selection = None;
             self.highlighted_layer_id = None;
+            self.reset_svg_export();
             self.viewport = None;
             self.load_task = None;
             self.show(Content::Nothing, cx);
@@ -488,6 +504,86 @@ impl Viewer {
             self.viewport = Some(viewport);
             cx.notify();
         }
+    }
+
+    fn reset_svg_export(&mut self) {
+        self.svg_export = SvgExport::Idle;
+        self.svg_export_task = None;
+    }
+
+    fn selected_frame_file(&self) -> Option<FrameFile> {
+        let Some(Selection::Frame(relative_path)) = &self.selection else {
+            return None;
+        };
+        self.frames
+            .iter()
+            .find(|file| file.relative_path.as_ref() == Some(relative_path))
+            .cloned()
+    }
+
+    fn copy_svg_to_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.selected_frame_file() else {
+            return;
+        };
+        let project = self.project.clone();
+        let exporting =
+            cx.background_spawn(async move { frame_render::export_svg(&project, &file) });
+        self.svg_export = SvgExport::Running;
+        cx.notify();
+        self.svg_export_task = Some(cx.spawn(async move |viewer, cx| {
+            let exported = exporting.await;
+            let update = viewer.update(cx, |viewer, cx| {
+                viewer.svg_export = match exported {
+                    Ok(markup) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(markup));
+                        SvgExport::Copied
+                    }
+                    Err(error) => SvgExport::Failed(failure_messages(&error).join("\n")),
+                };
+                cx.notify();
+            });
+            if update.is_ok() {
+                cx.background_executor().timer(COPIED_NOTICE_DURATION).await;
+                viewer
+                    .update(cx, |viewer, cx| {
+                        if matches!(viewer.svg_export, SvgExport::Copied) {
+                            viewer.svg_export = SvgExport::Idle;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+            }
+        }));
+    }
+
+    fn render_export_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_running = matches!(self.svg_export, SvgExport::Running);
+        let (label, button_icon) = match self.svg_export {
+            SvgExport::Copied => ("Copied to clipboard", IconName::Check),
+            _ => ("Export to SVG", IconName::Copy),
+        };
+        let note = match &self.svg_export {
+            SvgExport::Failed(message) => message.clone(),
+            _ => "Copies the SVG to your clipboard, ready to paste into Figma.".to_owned(),
+        };
+        let note_color = if matches!(self.svg_export, SvgExport::Failed(_)) {
+            cx.theme().danger
+        } else {
+            cx.theme().muted_foreground
+        };
+        detail_section("Export", cx)
+            .child(
+                Button::new("export-svg")
+                    .primary()
+                    .small()
+                    .w_full()
+                    .icon(button_icon)
+                    .label(label)
+                    .loading(is_running)
+                    .disabled(is_running)
+                    .on_click(cx.listener(|viewer, _, _, cx| viewer.copy_svg_to_clipboard(cx))),
+            )
+            .child(div().text_xs().text_color(note_color).child(note))
     }
 
     fn toggle_layer_highlight(&mut self, layer_id: String, cx: &mut Context<Self>) {
@@ -917,6 +1013,7 @@ impl Viewer {
                         .into_any_element(),
                 );
             }
+            sections.push(self.render_export_section(cx).into_any_element());
             let mut layer_rows = Vec::new();
             self.push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
             sections.push(

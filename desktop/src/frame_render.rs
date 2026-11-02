@@ -9,6 +9,7 @@ use forma::inspect;
 use forma::project::Project;
 use forma::renderer;
 use forma::scene::Scene;
+use forma::svg_export;
 use gpui_kit::RenderImage;
 use image::{Frame, RgbaImage};
 use serde_json::Value;
@@ -38,6 +39,13 @@ pub fn render_frame(project: &Project, file: &FrameFile) -> Result<RenderedFrame
         height: scene.height as f32,
         report: inspect::report(&scene, None)?,
     })
+}
+
+/// Reads the file again, so the export is of what's on disk at the moment it was asked for.
+pub fn export_svg(project: &Project, file: &FrameFile) -> Result<String> {
+    let resources = project.resources()?;
+    let scene = frames::load_scene(file, &resources)?;
+    Ok(svg_export::to_svg(&scene))
 }
 
 /// Falls back to the project's own scale for frames too large to double.
