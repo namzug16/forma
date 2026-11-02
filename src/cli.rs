@@ -291,7 +291,10 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
     for file in &files {
         match render_frame(&project, &resources, file, options) {
             Ok(result) => {
-                print_render_result(&result, false);
+                print_render_warnings(&result);
+                if !arguments.json {
+                    print_render_destination(&result);
+                }
                 results.push(json!(result));
             }
             Err(error) => {
@@ -491,18 +494,26 @@ fn absolute_output_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn print_render_result(result: &RenderResult, emit_json: bool) {
-    for warning in &result.warnings {
-        eprintln!("warning: {warning}");
-    }
+    print_render_warnings(result);
     if emit_json {
         println!("{:#}", json!(result));
     } else {
-        let destination = result.output.as_ref().map_or_else(
-            || "clipboard".to_owned(),
-            |output| output.display().to_string(),
-        );
-        println!("{destination} ({}×{})", result.width, result.height);
+        print_render_destination(result);
     }
+}
+
+fn print_render_warnings(result: &RenderResult) {
+    for warning in &result.warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+fn print_render_destination(result: &RenderResult) {
+    let destination = result.output.as_ref().map_or_else(
+        || "clipboard".to_owned(),
+        |output| output.display().to_string(),
+    );
+    println!("{destination} ({}×{})", result.width, result.height);
 }
 
 fn run_validate(arguments: &Cli, frame: Option<&str>) -> Result<ExitCode> {

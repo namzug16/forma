@@ -339,6 +339,19 @@ fn an_artwork_goes_from_init_through_generate_into_a_frame() {
 }
 
 #[test]
+fn rendering_every_frame_as_json_prints_only_json() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    assert!(forma(&root, &["init"]).status.success());
+
+    let rendered = forma(&root, &["render", "--all", "--json"]);
+    assert!(rendered.status.success());
+    let result = json_output(&rendered);
+    assert_eq!(result["success"], json!(true));
+    assert_eq!(result["results"][0]["frame"], json!("example"));
+}
+
+#[test]
 fn projects_created_before_artworks_still_load() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
