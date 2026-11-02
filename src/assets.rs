@@ -84,7 +84,14 @@ impl Assets {
         let not_found = || {
             Diagnostic::new(
                 "asset_not_found",
-                format!("asset \"{relative_path}\" does not exist"),
+                if relative_path.starts_with("artworks/") {
+                    format!(
+                        "asset \"{relative_path}\" does not exist; \
+                         run `forma generate` to create it"
+                    )
+                } else {
+                    format!("asset \"{relative_path}\" does not exist")
+                },
             )
             .at(path)
         };

@@ -17,6 +17,7 @@ const CONFIG_FILE: &str = "config.json";
 const DEFAULT_CONFIG: &str = r#"{
   "version": 1,
   "frames": "./frames",
+  "artworks": "./artworks",
   "tokens": "./tokens.json",
   "assets": "./assets",
   "output": "./output",
@@ -80,11 +81,40 @@ const EXAMPLE_FRAME: &str = r##"{
 }
 "##;
 
+const EXAMPLE_ARTWORK: &str = r##"-- Regenerate with `forma generate example`; frames use it as artworks/example.png.
+return {
+  width = 1080,
+  height = 1080,
+  seed = 7,
+  draw = function(canvas, tokens, random, noise)
+    canvas:clear("$colors.background")
+    for _ = 1, 400 do
+      local x, y = random(0, 1080), random(0, 1080)
+      local drift = noise(x / 200, y / 200)
+      canvas:circle {
+        x = x,
+        y = y,
+        radius = 4 + 24 * math.abs(drift),
+        fill = "$colors.primary",
+        opacity = 0.2 + 0.6 * random(),
+      }
+    end
+  end,
+}
+"##;
+
+fn default_artworks_directory() -> PathBuf {
+    PathBuf::from("./artworks")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub frames: PathBuf,
+    /// Defaulted so projects created before artworks existed keep loading.
+    #[serde(default = "default_artworks_directory")]
+    pub artworks: PathBuf,
     pub tokens: PathBuf,
     pub assets: PathBuf,
     pub output: PathBuf,
@@ -146,6 +176,18 @@ impl Project {
         self.resolve(&self.config.frames)
     }
 
+    pub fn artworks_directory(&self) -> PathBuf {
+        self.resolve(&self.config.artworks)
+    }
+
+    /// Inside the assets directory, so frames can use the result as an ordinary image.
+    pub fn artwork_output_path(&self, relative_path: &Path) -> PathBuf {
+        self.assets_directory()
+            .join("artworks")
+            .join(relative_path)
+            .with_extension("png")
+    }
+
     pub fn tokens_path(&self) -> PathBuf {
         self.resolve(&self.config.tokens)
     }
@@ -160,6 +202,7 @@ impl Project {
         let assets = self.assets_directory();
         path.starts_with(frames)
             || path.starts_with(assets)
+            || path.starts_with(self.artworks_directory())
             || path == self.tokens_path()
             || path == self.config_path()
     }
@@ -224,6 +267,7 @@ pub fn initialize(root: &Path) -> Result<InitReport> {
         ("config.json", DEFAULT_CONFIG),
         ("tokens.json", DEFAULT_TOKENS),
         ("frames/example.json", EXAMPLE_FRAME),
+        ("artworks/example.lua", EXAMPLE_ARTWORK),
         ("assets/fonts/.gitkeep", ""),
         ("assets/images/.gitkeep", ""),
         ("assets/svg/.gitkeep", ""),
