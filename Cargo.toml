@@ -15,6 +15,7 @@ base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
 fontdb = "0.24.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "serialize"] }
 resvg = { version = "0.49.0", default-features = false, features = ["raster-images"] }
 rustybuzz = "0.20.1"
 schemars = "1.2.3"
