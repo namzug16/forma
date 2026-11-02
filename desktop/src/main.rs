@@ -19,6 +19,11 @@ use welcome::Welcome;
 
 actions!(forma_desktop, [Quit, FitFrame]);
 
+/// Weak, so going back to the welcome window really does close the project and its watcher.
+struct OpenViewer(WeakEntity<Viewer>);
+
+impl Global for OpenViewer {}
+
 fn main() {
     gpui_kit::application().with_assets(AllAssets).run(|cx| {
         gpui_kit::init(cx);
@@ -28,6 +33,12 @@ fn main() {
             KeyBinding::new("cmd-0", FitFrame, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &FitFrame, cx| {
+            let viewer = cx.try_global::<OpenViewer>();
+            if let Some(viewer) = viewer.and_then(|viewer| viewer.0.upgrade()) {
+                viewer.update(cx, Viewer::fit_frame);
+            }
+        });
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -46,8 +57,7 @@ fn main() {
                 disabled: false,
             },
         ]);
-        gpui_kit::open_window(welcome_window_options(cx), cx, |_, cx| cx.new(Welcome::new))
-            .expect("the welcome window opens");
+        open_welcome_window(cx);
         cx.activate(true);
     });
 }
@@ -63,7 +73,12 @@ pub fn open_project_window(project: Project, cx: &mut App) {
         |_, cx| cx.new(|cx| Viewer::new(project, cx)),
     )
     .expect("the project window opens");
-    cx.on_action(move |_: &FitFrame, cx| viewer.update(cx, Viewer::fit_frame));
+    cx.set_global(OpenViewer(viewer.downgrade()));
+}
+
+pub fn open_welcome_window(cx: &mut App) {
+    gpui_kit::open_window(welcome_window_options(cx), cx, |_, cx| cx.new(Welcome::new))
+        .expect("the welcome window opens");
 }
 
 fn welcome_window_options(cx: &App) -> WindowOptions {

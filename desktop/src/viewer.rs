@@ -366,24 +366,42 @@ impl Viewer {
             1 => "1 frame".to_owned(),
             count => format!("{count} frames"),
         };
-        div()
+        h_flex()
             .flex_none()
             .pt(px(TRAFFIC_LIGHTS_HEIGHT))
-            .px_4()
+            .pl_2()
+            .pr_4()
             .pb_3()
+            .gap_1()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                div()
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(project_name),
+                Button::new("all-projects")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronLeft)
+                    .tooltip("All projects")
+                    .on_click(|_, window, cx| {
+                        // The welcome window comes first: closing the last window quits.
+                        crate::open_welcome_window(cx);
+                        window.remove_window();
+                    }),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(frame_count),
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(project_name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(frame_count),
+                    ),
             )
     }
 
