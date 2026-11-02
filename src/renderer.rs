@@ -4,10 +4,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tiny_skia::{
-    Color as SkiaColor, FillRule, FilterQuality, GradientStop, IntSize, LineCap as SkiaLineCap,
-    LineJoin as SkiaLineJoin, LinearGradient, Mask, MaskType, Paint as SkiaPaint, PathBuilder,
-    Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode,
-    Stroke as SkiaStroke, StrokeDash, Transform,
+    Color as SkiaColor, ColorU8, FillRule, FilterQuality, GradientStop, IntSize,
+    LineCap as SkiaLineCap, LineJoin as SkiaLineJoin, LinearGradient, Mask, MaskType,
+    Paint as SkiaPaint, PathBuilder, Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect,
+    Shader, SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
 };
 
 use usvg::Tree;
@@ -33,7 +33,11 @@ pub fn output_size(scene: &Scene, scale: f64) -> Result<(u32, u32), Diagnostic> 
             "scale must be a positive number",
         ));
     }
-    let (width, height) = (scene.width * scale, scene.height * scale);
+    checked_raster_size(scene.width * scale, scene.height * scale)
+}
+
+/// Whole pixels within the limits, which keeps a raster allocation from failing.
+pub fn checked_raster_size(width: f64, height: f64) -> Result<(u32, u32), Diagnostic> {
     if (width - width.round()).abs() > INTEGRAL_SIZE_TOLERANCE
         || (height - height.round()).abs() > INTEGRAL_SIZE_TOLERANCE
     {
@@ -92,6 +96,158 @@ pub fn copy_to_clipboard(canvas: &Pixmap) -> Result<(), arboard::Error> {
         height: canvas.height() as usize,
         bytes: straight_rgba.into(),
     })
+}
+
+/// One step of an artwork path, with coordinates in the order SVG writes them.
+#[derive(Debug, Clone, Copy)]
+pub enum ArtworkPathSegment {
+    MoveTo(f64, f64),
+    LineTo(f64, f64),
+    QuadTo(f64, f64, f64, f64),
+    CubicTo(f64, f64, f64, f64, f64, f64),
+    Close,
+}
+
+/// The surface an artwork draws on, one shape at a time, in generation order.
+pub struct ArtworkCanvas {
+    pixmap: Pixmap,
+    transform: Affine,
+    saved_transforms: Vec<Affine>,
+}
+
+impl ArtworkCanvas {
+    /// `width` and `height` must come from [`checked_raster_size`].
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            pixmap: Pixmap::new(width, height).expect("checked_raster_size rejects empty rasters"),
+            transform: Affine::IDENTITY,
+            saved_transforms: Vec::new(),
+        }
+    }
+
+    pub fn into_pixmap(self) -> Pixmap {
+        self.pixmap
+    }
+
+    /// Resets every pixel, ignoring the current transform.
+    pub fn clear(&mut self, paint: Option<&Paint>) {
+        self.pixmap.fill(SkiaColor::TRANSPARENT);
+        if let Some(paint) = paint {
+            let bounds = Bounds::sized(
+                f64::from(self.pixmap.width()),
+                f64::from(self.pixmap.height()),
+            );
+            fill_rect(&mut self.pixmap, bounds, 0.0, paint, Affine::IDENTITY);
+        }
+    }
+
+    pub fn save_transform(&mut self) {
+        self.saved_transforms.push(self.transform);
+    }
+
+    /// Returns false when nothing was saved.
+    pub fn restore_transform(&mut self) -> bool {
+        let saved = self.saved_transforms.pop();
+        self.transform = saved.unwrap_or(self.transform);
+        saved.is_some()
+    }
+
+    /// Later shapes go through `local` first, then the transform already in place.
+    pub fn apply_transform(&mut self, local: Affine) {
+        self.transform = local.then(self.transform);
+    }
+
+    pub fn rect(
+        &mut self,
+        bounds: Bounds,
+        corner_radius: f64,
+        fill: Option<&Paint>,
+        stroke: Option<&Stroke>,
+    ) {
+        if let Some(path) = rect_path(bounds, corner_radius) {
+            self.draw_shape(&path, fill, stroke);
+        }
+    }
+
+    pub fn ellipse(&mut self, bounds: Bounds, fill: Option<&Paint>, stroke: Option<&Stroke>) {
+        if let Some(path) = oval_path(bounds) {
+            self.draw_shape(&path, fill, stroke);
+        }
+    }
+
+    pub fn path(
+        &mut self,
+        segments: &[ArtworkPathSegment],
+        fill: Option<&Paint>,
+        stroke: Option<&Stroke>,
+    ) {
+        let mut builder = PathBuilder::new();
+        for segment in segments {
+            match *segment {
+                ArtworkPathSegment::MoveTo(x, y) => builder.move_to(x as f32, y as f32),
+                ArtworkPathSegment::LineTo(x, y) => builder.line_to(x as f32, y as f32),
+                ArtworkPathSegment::QuadTo(x1, y1, x, y) => {
+                    builder.quad_to(x1 as f32, y1 as f32, x as f32, y as f32);
+                }
+                ArtworkPathSegment::CubicTo(x1, y1, x2, y2, x, y) => builder.cubic_to(
+                    x1 as f32, y1 as f32, x2 as f32, y2 as f32, x as f32, y as f32,
+                ),
+                ArtworkPathSegment::Close => builder.close(),
+            }
+        }
+        if let Some(path) = builder.finish() {
+            self.draw_shape(&path, fill, stroke);
+        }
+    }
+
+    fn draw_shape(
+        &mut self,
+        path: &tiny_skia::Path,
+        fill: Option<&Paint>,
+        stroke: Option<&Stroke>,
+    ) {
+        if let Some(fill) = fill {
+            let bounds = path.bounds();
+            let bounds = Bounds {
+                x: f64::from(bounds.x()),
+                y: f64::from(bounds.y()),
+                width: f64::from(bounds.width()),
+                height: f64::from(bounds.height()),
+            };
+            fill_path(&mut self.pixmap, path, fill, bounds, self.transform);
+        }
+        if let Some(stroke) = stroke {
+            stroke_path(&mut self.pixmap, path, stroke, self.transform);
+        }
+    }
+
+    /// Asks `color_at` for straight red, green, blue and alpha in 0..=1 at every pixel, and
+    /// composites the result over the canvas. Pixel coordinates ignore the current transform.
+    pub fn shade<E>(
+        &mut self,
+        mut color_at: impl FnMut(u32, u32) -> Result<[f64; 4], E>,
+    ) -> Result<(), E> {
+        let width = self.pixmap.width();
+        let mut layer = Pixmap::new(width, self.pixmap.height())
+            .expect("a layer has the size of an existing canvas");
+        let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        for (index, pixel) in layer.pixels_mut().iter_mut().enumerate() {
+            let index = index as u32;
+            let [red, green, blue, alpha] = color_at(index % width, index / width)?;
+            *pixel =
+                ColorU8::from_rgba(channel(red), channel(green), channel(blue), channel(alpha))
+                    .premultiply();
+        }
+        self.pixmap.draw_pixmap(
+            0,
+            0,
+            layer.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+        Ok(())
+    }
 }
 
 fn draw_nodes(nodes: &[SceneNode], canvas: &mut Pixmap, parent: Affine) {
