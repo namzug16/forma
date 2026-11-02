@@ -160,7 +160,9 @@ Open a project from the welcome window to browse its frames, tokens and config. 
 are remembered in `~/Library/Application Support/Forma/`. The tree follows the files
 that exist, and the selected frame re-renders when it or the tokens and assets change. A frame
 that cannot render shows its errors for your agent to fix. Click a layer in the
-inspector to outline it on the canvas. The Assets section previews images, SVGs and fonts.
+inspector to outline it on the canvas. The Assets section previews images, SVGs and fonts. The inspector's Export
+section copies a frame to the clipboard as SVG, with text as outlines, to paste into tools such as
+Figma.
 
 | Input | Action |
 | --- | --- |
