@@ -66,7 +66,7 @@ impl WatchedPaths {
         let mut effects = ChangeEffects::default();
         for path in changed_paths {
             effects.reload_project |= touches(path, &self.config);
-            effects.refresh_tree |= touches(path, &self.frames);
+            effects.refresh_tree |= touches(path, &self.frames) || touches(path, &self.assets);
             effects.reload_selection |= touches(path, &self.tokens)
                 || touches(path, &self.assets)
                 || selected_frame
@@ -149,14 +149,26 @@ mod tests {
     }
 
     #[test]
-    fn tokens_and_assets_reload_the_selection() {
-        let reloads = ChangeEffects {
-            reload_selection: true,
-            ..Default::default()
-        };
+    fn tokens_reload_the_selection() {
+        assert_eq!(
+            effects("/p/forma/tokens.json", None),
+            ChangeEffects {
+                reload_selection: true,
+                ..Default::default()
+            }
+        );
+    }
 
-        assert_eq!(effects("/p/forma/tokens.json", None), reloads);
-        assert_eq!(effects("/p/forma/assets/images/logo.png", None), reloads);
+    #[test]
+    fn assets_reload_the_selection_and_refresh_the_tree() {
+        assert_eq!(
+            effects("/p/forma/assets/images/logo.png", None),
+            ChangeEffects {
+                refresh_tree: true,
+                reload_selection: true,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]

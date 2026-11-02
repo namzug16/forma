@@ -213,7 +213,7 @@ fn preview_typography(
     )
 }
 
-fn render_preview(frame: &Value, resources: &Resources) -> Result<TokenPreview, String> {
+pub fn render_preview(frame: &Value, resources: &Resources) -> Result<TokenPreview, String> {
     let render = || -> Result<TokenPreview, Failure> {
         let frame = document::parse_frame(&frame.to_string())?;
         let scene = scene::build(&frame, resources)?;

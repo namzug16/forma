@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +24,7 @@ use gpui_kit::*;
 use notify::{Event, RecommendedWatcher};
 use serde_json::Value;
 
+use crate::asset_preview::{self, AssetKind, AssetPreview};
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
 use crate::project_pages;
@@ -55,6 +56,11 @@ enum Content {
     Frame(RenderedFrame),
     Tokens(TokenSheet),
     Config,
+    /// A file forma has no way of drawing.
+    NotPreviewable {
+        file_name: String,
+        byte_size: u64,
+    },
     /// Why the selection cannot be shown.
     Failed(Vec<String>),
 }
@@ -68,6 +74,7 @@ pub struct Viewer {
     /// Set when live updates stop, because what is on screen can then go stale.
     watch_failure: Option<String>,
     frames: Vec<FrameFile>,
+    assets: Vec<PathBuf>,
     tree_state: Entity<TreeState>,
     collapsed_folders: HashSet<SharedString>,
     selection: Option<Selection>,
@@ -110,8 +117,9 @@ impl Viewer {
             project_watch: None,
             watch_failure: None,
             frames: Vec::new(),
+            assets: Vec::new(),
             tree_state,
-            collapsed_folders: HashSet::new(),
+            collapsed_folders: frame_tree::initially_collapsed_folders(),
             selection: None,
             highlighted_layer_id: None,
             content: Content::Nothing,
@@ -269,15 +277,20 @@ impl Viewer {
             self.project_failure = failure_messages(&error);
             Vec::new()
         });
+        let assets = asset_preview::list(&self.project).unwrap_or_else(|error| {
+            self.project_failure = failure_messages(&error);
+            Vec::new()
+        });
         let same_frames = frames
             .iter()
             .map(|file| &file.relative_path)
             .eq(self.frames.iter().map(|file| &file.relative_path));
-        if same_frames && self.tree_state.read(cx).entry(0).is_some() {
+        if same_frames && assets == self.assets && self.tree_state.read(cx).entry(0).is_some() {
             return;
         }
         self.frames = frames;
-        let items = frame_tree::build_items(&self.frames, &self.collapsed_folders);
+        self.assets = assets;
+        let items = frame_tree::build_items(&self.frames, &self.assets, &self.collapsed_folders);
         self.tree_state.update(cx, |tree_state, cx| {
             let selected_id = tree_state.selected_item().map(|item| item.id.clone());
             tree_state.set_items(items, cx);
@@ -288,18 +301,20 @@ impl Viewer {
     }
 
     fn clear_selection_if_deleted(&mut self, cx: &mut Context<Self>) {
-        if let Some(Selection::Frame(selected_path)) = &self.selection {
-            let still_exists = self
+        let still_exists = match &self.selection {
+            Some(Selection::Frame(selected_path)) => self
                 .frames
                 .iter()
-                .any(|file| file.relative_path.as_ref() == Some(selected_path));
-            if !still_exists {
-                self.selection = None;
-                self.highlighted_layer_id = None;
-                self.viewport = None;
-                self.load_task = None;
-                self.show(Content::Nothing, cx);
-            }
+                .any(|file| file.relative_path.as_ref() == Some(selected_path)),
+            Some(Selection::Asset(selected_path)) => self.assets.contains(selected_path),
+            _ => true,
+        };
+        if !still_exists {
+            self.selection = None;
+            self.highlighted_layer_id = None;
+            self.viewport = None;
+            self.load_task = None;
+            self.show(Content::Nothing, cx);
         }
     }
 
@@ -314,6 +329,7 @@ impl Viewer {
             let is_frames_root = entry.is_folder() && entry.depth() == 0;
             let item_icon = match Selection::from_item_id(&entry.item().id) {
                 Some(Selection::Frame(_)) => Some(IconName::Frame),
+                Some(Selection::Asset(relative_path)) => Some(asset_icon(&relative_path)),
                 Some(Selection::Tokens) => Some(IconName::Palette),
                 Some(Selection::Config) => Some(IconName::Settings2),
                 None if is_frames_root => None,
@@ -745,6 +761,10 @@ impl Viewer {
             Content::Tokens(sheet) => project_pages::render_tokens(sheet, cx).into_any_element(),
             Content::Config => project_pages::render_config(&self.project, self.frames.len(), cx)
                 .into_any_element(),
+            Content::NotPreviewable {
+                file_name,
+                byte_size,
+            } => render_not_previewable(file_name, *byte_size, cx).into_any_element(),
             Content::Failed(messages) => self.render_failure(messages, cx).into_any_element(),
         }
     }
@@ -933,6 +953,16 @@ fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Resul
                 .context("this frame no longer exists")?;
             Ok(Content::Frame(frame_render::render_frame(project, file)?))
         }
+        Selection::Asset(relative_path) => Ok(match asset_preview::load(project, relative_path)? {
+            AssetPreview::Drawn(frame) => Content::Frame(frame),
+            AssetPreview::NotPreviewable {
+                file_name,
+                byte_size,
+            } => Content::NotPreviewable {
+                file_name,
+                byte_size,
+            },
+        }),
         Selection::Tokens => Ok(Content::Tokens(token_sheet::load(project)?)),
         Selection::Config => Ok(Content::Config),
     }
@@ -1027,6 +1057,37 @@ fn frame_title(frame: &RenderedFrame) -> String {
         .as_str()
         .unwrap_or_default()
         .to_owned()
+}
+
+fn asset_icon(relative_path: &Path) -> IconName {
+    match asset_preview::kind_of(relative_path) {
+        AssetKind::Image => IconName::Image,
+        AssetKind::Svg => IconName::Shapes,
+        AssetKind::Font => IconName::Type,
+        AssetKind::Other => IconName::File,
+    }
+}
+
+fn render_not_previewable(file_name: &str, byte_size: u64, cx: &App) -> impl IntoElement {
+    let secondary_text = cx.theme().muted_foreground;
+    div()
+        .size_full()
+        .bg(style::canvas_background())
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .child(icon(IconName::File, secondary_text).size(px(24.)))
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(file_name.to_owned()),
+        )
+        .child(div().text_color(secondary_text).child(format!(
+            "{} · No preview for this file type",
+            asset_preview::human_size(byte_size)
+        )))
 }
 
 fn layer_icon(kind: &str) -> IconName {

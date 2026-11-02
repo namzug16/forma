@@ -1,5 +1,6 @@
 //! Read-only viewer for a Forma project. Agents edit the files; this only looks at them.
 
+mod asset_preview;
 mod frame_render;
 mod frame_tree;
 mod project_pages;
