@@ -33,7 +33,7 @@ impl FrameFile {
 pub fn list(project: &Project) -> Result<Vec<FrameFile>> {
     let frames_directory = project.frames_directory();
     let mut paths = Vec::new();
-    collect_documents(&frames_directory, &mut paths)?;
+    collect_files(&frames_directory, "json", &mut paths)?;
     let mut frames = paths
         .into_iter()
         .map(|path| FrameFile {
@@ -48,16 +48,20 @@ pub fn list(project: &Project) -> Result<Vec<FrameFile>> {
     Ok(frames)
 }
 
-fn collect_documents(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn collect_files(
+    directory: &Path,
+    wanted_extension: &str,
+    paths: &mut Vec<PathBuf>,
+) -> Result<()> {
     let entries = fs::read_dir(directory)
-        .with_context(|| format!("cannot read frames directory {}", directory.display()))?;
+        .with_context(|| format!("cannot read directory {}", directory.display()))?;
     for entry in entries {
         let path = entry?.path();
         if path.is_dir() {
-            collect_documents(&path, paths)?;
+            collect_files(&path, wanted_extension, paths)?;
         } else if path
             .extension()
-            .is_some_and(|extension| extension == "json")
+            .is_some_and(|extension| extension == wanted_extension)
         {
             paths.push(path);
         }
