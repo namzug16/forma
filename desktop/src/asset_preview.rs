@@ -93,7 +93,7 @@ pub fn load(project: &Project, relative_path: &Path) -> Result<AssetPreview> {
         AssetKind::Image => {
             let (_, image) = assets.load_image(&source, &source).map_err(Failure::from)?;
             let mut bgra = image.rgba;
-            for pixel in bgra.chunks_exact_mut(4) {
+            for pixel in bgra.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             Ok(AssetPreview::Drawn(RenderedFrame {
