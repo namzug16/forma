@@ -28,6 +28,7 @@ use serde_json::Value;
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
 use crate::project_watch::{self, WatchedPaths};
+use crate::recent_projects;
 use crate::style;
 use crate::viewport::Viewport;
 
@@ -57,7 +58,7 @@ enum Content {
 }
 
 pub struct Viewer {
-    project: Option<Arc<Project>>,
+    project: Arc<Project>,
     /// Why the project cannot be shown; agents fix these, the viewer only reports them.
     project_failure: Vec<String>,
     /// Dropping these stops the change events.
@@ -82,7 +83,7 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(project: Project, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let subscriptions = [
             cx.observe(&tree_state, |viewer, tree_state, cx| {
@@ -101,8 +102,8 @@ impl Viewer {
                 }
             }),
         ];
-        Self {
-            project: None,
+        let mut viewer = Self {
+            project: Arc::new(project),
             project_failure: Vec::new(),
             project_watch: None,
             watch_failure: None,
@@ -117,7 +118,10 @@ impl Viewer {
             drag_position: None,
             load_task: None,
             _subscriptions: subscriptions,
-        }
+        };
+        viewer.start_watching(cx);
+        viewer.sync_tree(cx);
+        viewer
     }
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
@@ -132,10 +136,10 @@ impl Viewer {
 
     /// Reloads what is selected, leaving the current content up until the result arrives.
     fn load_selection(&mut self, cx: &mut Context<Self>) {
-        let (Some(project), Some(selection)) = (self.project.clone(), self.selection.clone())
-        else {
+        let Some(selection) = self.selection.clone() else {
             return;
         };
+        let project = self.project.clone();
         let frames = self.frames.clone();
         let loading = cx.background_spawn(async move { load(&project, &selection, &frames) });
         self.load_task = Some(cx.spawn(async move |viewer, cx| {
@@ -170,47 +174,8 @@ impl Viewer {
         cx.notify();
     }
 
-    fn choose_directory(&mut self, cx: &mut Context<Self>) {
-        let picked_paths = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
-        cx.spawn(async move |viewer, cx| {
-            let picked_paths = picked_paths.await;
-            viewer
-                .update(cx, |viewer, cx| match picked_paths {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            viewer.open_project(&path, cx);
-                        }
-                    }
-                    Ok(Ok(None)) => {}
-                    Ok(Err(error)) => {
-                        viewer.project_failure = vec![format!("{error:#}")];
-                        cx.notify();
-                    }
-                    Err(error) => {
-                        viewer.project_failure = vec![error.to_string()];
-                        cx.notify();
-                    }
-                })
-                .ok();
-        })
-        .detach();
-    }
-
-    fn open_project(&mut self, picked_directory: &Path, cx: &mut Context<Self>) {
-        match Project::locate(None, picked_directory) {
-            Ok(project) => self.adopt_project(project, cx),
-            Err(error) => self.project_failure = failure_messages(&error),
-        }
-        cx.notify();
-    }
-
     fn adopt_project(&mut self, project: Project, cx: &mut Context<Self>) {
-        self.project = Some(Arc::new(project));
+        self.project = Arc::new(project);
         self.project_failure.clear();
         self.start_watching(cx);
         self.sync_tree(cx);
@@ -220,12 +185,7 @@ impl Viewer {
     /// The project's own files changed in a way that may invalidate it. A failure leaves the
     /// old watcher running, so the fix is picked up as soon as it is saved.
     fn reload_project(&mut self, cx: &mut Context<Self>) {
-        let root = self
-            .project
-            .as_ref()
-            .and_then(|project| project.directory.parent())
-            .map(Path::to_owned);
-        let Some(root) = root else {
+        let Some(root) = self.project.directory.parent().map(Path::to_owned) else {
             return;
         };
         match Project::locate(Some(&root), &root) {
@@ -236,10 +196,7 @@ impl Viewer {
     }
 
     fn start_watching(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let watched_paths = WatchedPaths::of(project);
+        let watched_paths = WatchedPaths::of(&self.project);
         let (watcher, mut changes) = match project_watch::watch(&watched_paths) {
             Ok(watch) => watch,
             Err(error) => {
@@ -300,10 +257,7 @@ impl Viewer {
     /// Matches the tree to the frames on disk. Only their existence matters here, so an edit
     /// to a frame leaves the tree alone.
     fn sync_tree(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let frames = frames::list(project).unwrap_or_else(|error| {
+        let frames = frames::list(&self.project).unwrap_or_else(|error| {
             self.project_failure = failure_messages(&error);
             Vec::new()
         });
@@ -396,10 +350,9 @@ impl Viewer {
     fn render_project_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let project_name = self
             .project
-            .as_ref()
-            .and_then(|project| project.directory.parent())
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned())
+            .directory
+            .parent()
+            .map(recent_projects::project_name)
             .unwrap_or_default();
         let frame_count = match self.frames.len() {
             1 => "1 frame".to_owned(),
@@ -953,37 +906,6 @@ impl Viewer {
                     .children(sections),
             )
     }
-
-    fn render_start_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let secondary_text = cx.theme().muted_foreground;
-        div()
-            .size_full()
-            .bg(style::canvas_background())
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(icon(IconName::FolderOpen, secondary_text).size(px(32.)))
-            .child(
-                div()
-                    .text_color(secondary_text)
-                    .child("Open a project to view its frames"),
-            )
-            .child(
-                Button::new("open-directory")
-                    .primary()
-                    .label("Open directory…")
-                    .on_click(cx.listener(|viewer, _, _, cx| viewer.choose_directory(cx))),
-            )
-            .children(self.project_failure.iter().map(|message| {
-                div()
-                    .max_w(px(560.))
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(message.clone())
-            }))
-    }
 }
 
 fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Result<Content> {
@@ -1008,7 +930,7 @@ fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Resul
     }
 }
 
-fn icon(name: IconName, color: Hsla) -> Icon {
+pub fn icon(name: IconName, color: Hsla) -> Icon {
     Icon::new(name).size(px(ICON_SIZE)).text_color(color)
 }
 
@@ -1137,34 +1059,31 @@ pub fn failure_messages(error: &anyhow::Error) -> Vec<String> {
 
 impl Render for Viewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = match &self.project {
-            None => self.render_start_screen(cx).into_any_element(),
-            Some(_) => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(div().flex_1().min_h_0().child(self.render_project(cx)))
-                .when_some(self.watch_failure.clone(), |column, failure| {
-                    column.child(
-                        h_flex()
-                            .flex_none()
-                            .px_4()
-                            .py_2()
-                            .gap_2()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .text_xs()
-                            .child(icon(IconName::TriangleAlert, cx.theme().danger))
-                            .child(format!("Live updates stopped: {failure}")),
-                    )
-                })
-                .into_any_element(),
-        };
         div()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(content)
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_1().min_h_0().child(self.render_project(cx)))
+                    .when_some(self.watch_failure.clone(), |column, failure| {
+                        column.child(
+                            h_flex()
+                                .flex_none()
+                                .px_4()
+                                .py_2()
+                                .gap_2()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .text_xs()
+                                .child(icon(IconName::TriangleAlert, cx.theme().danger))
+                                .child(format!("Live updates stopped: {failure}")),
+                        )
+                    }),
+            )
     }
 }
 
