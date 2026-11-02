@@ -89,6 +89,8 @@ pub struct Viewer {
     selection: Option<Selection>,
     /// The layer outlined on the canvas; ids are unique within a frame.
     highlighted_layer_id: Option<String>,
+    /// The layer under the pointer in the layers panel; outlined instead of the clicked one.
+    hovered_layer_id: Option<String>,
     content: Content,
     /// `None` while the frame simply fits the canvas, until the user pans or zooms.
     viewport: Option<Viewport>,
@@ -134,6 +136,7 @@ impl Viewer {
             collapsed_folders: frame_tree::initially_collapsed_folders(),
             selection: None,
             highlighted_layer_id: None,
+            hovered_layer_id: None,
             content: Content::Nothing,
             viewport: None,
             canvas_bounds: Rc::default(),
@@ -152,6 +155,7 @@ impl Viewer {
         if self.selection.as_ref() != Some(&selection) {
             self.selection = Some(selection);
             self.highlighted_layer_id = None;
+            self.hovered_layer_id = None;
             self.reset_svg_export();
             self.viewport = None;
             self.show(Content::Loading, cx);
@@ -194,13 +198,10 @@ impl Viewer {
             _ => {}
         }
         if let Content::Frame(frame) = &self.content {
-            let layer_still_exists = self
-                .highlighted_layer_id
-                .as_ref()
-                .is_some_and(|id| layer_bounds(&frame.report["layers"], id).is_some());
-            if !layer_still_exists {
-                self.highlighted_layer_id = None;
-            }
+            let layer_still_exists =
+                |id: &String| layer_bounds(&frame.report["layers"], id).is_some();
+            self.highlighted_layer_id = self.highlighted_layer_id.take().filter(layer_still_exists);
+            self.hovered_layer_id = self.hovered_layer_id.take().filter(layer_still_exists);
         }
         cx.notify();
     }
@@ -327,6 +328,7 @@ impl Viewer {
         if !still_exists {
             self.selection = None;
             self.highlighted_layer_id = None;
+            self.hovered_layer_id = None;
             self.reset_svg_export();
             self.viewport = None;
             self.load_task = None;
@@ -592,11 +594,24 @@ impl Viewer {
         cx.notify();
     }
 
+    fn set_layer_hovered(&mut self, layer_id: &str, is_hovered: bool, cx: &mut Context<Self>) {
+        if is_hovered {
+            self.hovered_layer_id = Some(layer_id.to_owned());
+        } else if self.hovered_layer_id.as_deref() == Some(layer_id) {
+            // Moving between rows may enter the next one before leaving this one.
+            self.hovered_layer_id = None;
+        }
+        cx.notify();
+    }
+
     /// Drawn over the image, so highlighting never re-renders the frame. The outline is clipped
     /// to the frame like the layers are, but the tag is not, so it survives at the frame's edge.
     fn render_layer_highlight(&self, viewport: Viewport) -> Option<impl IntoElement> {
         let frame = self.displayed_frame()?;
-        let layer_id = self.highlighted_layer_id.clone()?;
+        let layer_id = self
+            .hovered_layer_id
+            .clone()
+            .or_else(|| self.highlighted_layer_id.clone())?;
         let bounds = layer_bounds(&frame.report["layers"], &layer_id)?;
         let zoom = viewport.zoom;
         // A layer overhanging the frame keeps its tag on the part that can be seen.
@@ -967,6 +982,12 @@ impl Viewer {
                         },
                     ))
                     .child(div().min_w_0().truncate().child(layer_id.clone()))
+                    .on_hover(cx.listener({
+                        let layer_id = layer_id.clone();
+                        move |viewer, is_hovered: &bool, _, cx| {
+                            viewer.set_layer_hovered(&layer_id, *is_hovered, cx);
+                        }
+                    }))
                     .on_click(cx.listener(move |viewer, _, _, cx| {
                         viewer.toggle_layer_highlight(layer_id.clone(), cx);
                     }))
