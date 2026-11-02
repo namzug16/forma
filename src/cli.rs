@@ -283,14 +283,10 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
             Err(error) => {
                 all_succeeded = false;
                 eprintln!("{}: error: {error:#}", file.display_name());
-                let errors = error.downcast_ref::<Failure>().map_or_else(
-                    || vec![Diagnostic::new("error", format!("{error:#}"))],
-                    |f| f.0.clone(),
-                );
                 results.push(json!({
                     "success": false,
                     "frame": file.display_name(),
-                    "errors": errors,
+                    "errors": error_diagnostics(&error),
                 }));
             }
         }
@@ -306,6 +302,13 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn error_diagnostics(error: &anyhow::Error) -> Vec<Diagnostic> {
+    error.downcast_ref::<Failure>().map_or_else(
+        || vec![Diagnostic::new("error", format!("{error:#}"))],
+        |failure| failure.0.clone(),
+    )
 }
 
 #[derive(Serialize)]
