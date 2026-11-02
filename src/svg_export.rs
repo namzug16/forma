@@ -474,8 +474,10 @@ mod tests {
         const VISIBLE_DIFFERENCE: u8 = 24;
         let differing = left
             .data()
-            .chunks_exact(4)
-            .zip(right.data().chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(right.data().as_chunks::<4>().0)
             .filter(|(left, right)| {
                 left.iter()
                     .zip(right.iter())
