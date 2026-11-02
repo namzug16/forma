@@ -11,5 +11,6 @@ pub mod net;
 pub mod project;
 pub mod renderer;
 pub mod scene;
+pub mod svg_export;
 pub mod text;
 pub mod tokens;

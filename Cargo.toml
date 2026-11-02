@@ -11,6 +11,7 @@ members = ["desktop"]
 [dependencies]
 anyhow = "1.0.104"
 arboard = "3.7.0"
+base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
 fontdb = "0.24.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -23,7 +24,7 @@ serde_path_to_error = "0.1.20"
 thiserror = "2.0.21"
 tiny-skia = "0.12.0"
 ureq = "3.5.0"
-usvg = { version = "0.49.0", default-features = false }
+usvg = { version = "0.49.0", default-features = false, features = ["writer"] }
 
 [profile.release]
 lto = "fat"
