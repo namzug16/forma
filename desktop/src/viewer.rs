@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -55,7 +54,7 @@ enum Content {
     Loading,
     Frame(RenderedFrame),
     Tokens(TokenSheet),
-    Text(String),
+    Config,
     /// Why the selection cannot be shown.
     Failed(Vec<String>),
 }
@@ -726,18 +725,7 @@ impl Viewer {
                 self.render_canvas(cx).into_any_element()
             }
             Content::Tokens(sheet) => project_pages::render_tokens(sheet, cx).into_any_element(),
-            Content::Text(text) => div()
-                .id("text-content")
-                .size_full()
-                .bg(style::canvas_background())
-                .overflow_y_scrollbar()
-                .child(
-                    div()
-                        .p_6()
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(text.clone()),
-                )
+            Content::Config => project_pages::render_config(&self.project, self.frames.len(), cx)
                 .into_any_element(),
             Content::Failed(messages) => self.render_failure(messages, cx).into_any_element(),
         }
@@ -928,12 +916,7 @@ fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Resul
             Ok(Content::Frame(frame_render::render_frame(project, file)?))
         }
         Selection::Tokens => Ok(Content::Tokens(token_sheet::load(project)?)),
-        Selection::Config => {
-            let path = project.config_path();
-            let text = fs::read_to_string(&path)
-                .with_context(|| format!("cannot read {}", path.display()))?;
-            Ok(Content::Text(text))
-        }
+        Selection::Config => Ok(Content::Config),
     }
 }
 

@@ -1,8 +1,10 @@
 //! The pages that replace the canvas for the project's tokens and config.
 
+use forma::project::Project;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::style;
@@ -222,4 +224,135 @@ pub fn render_tokens(sheet: &TokenSheet, cx: &App) -> impl IntoElement {
             .into_any_element()
     });
     page("tokens-page", "Tokens", subtitle, sections, cx)
+}
+
+fn render_stat(name: IconName, value: String, label: &str, cx: &App) -> impl IntoElement {
+    card(cx)
+        .flex_1()
+        .min_w_0()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(icon(name, cx.theme().muted_foreground).size(px(18.)))
+        .child(
+            div()
+                .mt_2()
+                .truncate()
+                .text_size(px(22.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value),
+        )
+        .child(secondary_label(label.to_owned(), cx))
+}
+
+fn render_setting_rows<'a>(
+    rows: impl IntoIterator<Item = (IconName, &'a str, String)>,
+    cx: &App,
+) -> impl IntoElement {
+    let border = cx.theme().border;
+    card(cx).children(
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, (name, label, value))| {
+                h_flex()
+                    .h(px(40.))
+                    .px_3()
+                    .gap_3()
+                    .when(index > 0, |row| row.border_t_1().border_color(border))
+                    .child(icon(name, cx.theme().muted_foreground))
+                    .child(div().flex_none().w(px(120.)).child(label.to_owned()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(value),
+                    )
+            }),
+    )
+}
+
+pub fn render_config(project: &Project, frame_count: usize, cx: &App) -> impl IntoElement {
+    let config = &project.config;
+    let render_settings = page_section("Rendering")
+        .child(
+            h_flex()
+                .gap_3()
+                .child(render_stat(
+                    IconName::FileImage,
+                    config.render.format.to_uppercase(),
+                    "Format",
+                    cx,
+                ))
+                .child(render_stat(
+                    IconName::Scaling,
+                    format!("{}×", config.render.scale),
+                    "Scale",
+                    cx,
+                ))
+                .child(render_stat(
+                    IconName::Gauge,
+                    format!("{}%", config.render.quality),
+                    "Quality",
+                    cx,
+                ))
+                .child(render_stat(
+                    IconName::Frame,
+                    frame_count.to_string(),
+                    "Frames",
+                    cx,
+                )),
+        )
+        .into_any_element();
+    let paths = page_section("Paths")
+        .child(render_setting_rows(
+            [
+                (
+                    IconName::Frame,
+                    "Frames",
+                    config.frames.display().to_string(),
+                ),
+                (
+                    IconName::Palette,
+                    "Tokens",
+                    config.tokens.display().to_string(),
+                ),
+                (
+                    IconName::Image,
+                    "Assets",
+                    config.assets.display().to_string(),
+                ),
+                (
+                    IconName::FolderOutput,
+                    "Output",
+                    config.output.display().to_string(),
+                ),
+            ],
+            cx,
+        ))
+        .into_any_element();
+    let details = page_section("Project")
+        .child(render_setting_rows(
+            [
+                (
+                    IconName::FileCog,
+                    "Config file",
+                    project.config_path().display().to_string(),
+                ),
+                (IconName::Hash, "Format version", config.version.to_string()),
+            ],
+            cx,
+        ))
+        .into_any_element();
+    page(
+        "config-page",
+        "Config",
+        "Project settings".to_owned(),
+        [render_settings, paths, details],
+        cx,
+    )
 }
