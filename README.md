@@ -158,7 +158,8 @@ make desktop-app  # build target/Forma.app
 
 Open a project directory to browse its frames, tokens and config. The tree follows the files
 that exist, and the selected frame re-renders when it or the tokens and assets change. A frame
-that cannot render shows its errors for your agent to fix.
+that cannot render shows its errors for your agent to fix. Click a layer in the
+inspector to outline it on the canvas.
 
 | Input | Action |
 | --- | --- |
