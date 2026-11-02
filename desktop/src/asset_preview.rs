@@ -17,6 +17,11 @@ use serde_json::{Value, json};
 use crate::frame_render::{RenderedFrame, bgra_render_image};
 use crate::token_sheet::render_preview;
 
+const FONT_SPECIMEN: &str = "Aa Bb Cc Dd Ee\nDesign as code\n0123456789";
+const FONT_SPECIMEN_SIZE: f64 = 96.;
+const FONT_SPECIMEN_WIDTH: f64 = 1000.;
+const FONT_SPECIMEN_HEIGHT: f64 = 420.;
+
 #[derive(Debug, PartialEq)]
 pub enum AssetKind {
     Image,
@@ -118,7 +123,24 @@ pub fn load(project: &Project, relative_path: &Path) -> Result<AssetPreview> {
             });
             draw(&frame, project, &file_name)
         }
-        AssetKind::Font | AssetKind::Other => {
+        AssetKind::Font => {
+            let frame = json!({
+                "version": 1,
+                "id": "preview",
+                "width": FONT_SPECIMEN_WIDTH,
+                "height": FONT_SPECIMEN_HEIGHT,
+                "children": [{
+                    "id": "specimen",
+                    "type": "text",
+                    "text": FONT_SPECIMEN,
+                    "width": FONT_SPECIMEN_WIDTH,
+                    "font": { "file": source, "size": FONT_SPECIMEN_SIZE },
+                    "fill": { "color": "#FFFFFF" },
+                }],
+            });
+            draw(&frame, project, &file_name)
+        }
+        AssetKind::Other => {
             let resolved = assets.resolve(&source, &source).map_err(Failure::from)?;
             let byte_size = fs::metadata(&resolved)
                 .with_context(|| format!("cannot read {}", resolved.display()))?
