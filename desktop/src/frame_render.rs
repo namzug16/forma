@@ -50,7 +50,7 @@ fn display_scale(scene: &Scene, project_scale: f64) -> f64 {
     }
 }
 
-fn to_render_image(canvas: &Pixmap) -> Arc<RenderImage> {
+pub fn to_render_image(canvas: &Pixmap) -> Arc<RenderImage> {
     let buffer = RgbaImage::from_raw(canvas.width(), canvas.height(), to_straight_bgra(canvas))
         .expect("the buffer holds four bytes per pixel");
     Arc::new(RenderImage::new(smallvec![Frame::new(buffer)]))

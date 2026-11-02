@@ -2,9 +2,11 @@
 
 mod frame_render;
 mod frame_tree;
+mod project_pages;
 mod project_watch;
 mod recent_projects;
 mod style;
+mod token_sheet;
 mod viewer;
 mod viewport;
 mod welcome;

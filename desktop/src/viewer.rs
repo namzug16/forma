@@ -27,9 +27,11 @@ use serde_json::Value;
 
 use crate::frame_render::{self, RenderedFrame};
 use crate::frame_tree::{self, Selection};
+use crate::project_pages;
 use crate::project_watch::{self, WatchedPaths};
 use crate::recent_projects;
 use crate::style;
+use crate::token_sheet::{self, TokenSheet};
 use crate::viewport::Viewport;
 
 const ICON_SIZE: f32 = 14.;
@@ -52,6 +54,7 @@ enum Content {
     Nothing,
     Loading,
     Frame(RenderedFrame),
+    Tokens(TokenSheet),
     Text(String),
     /// Why the selection cannot be shown.
     Failed(Vec<String>),
@@ -158,9 +161,15 @@ impl Viewer {
 
     fn show(&mut self, content: Content, cx: &mut Context<Self>) {
         let replaced = std::mem::replace(&mut self.content, content);
-        if let Content::Frame(frame) = replaced {
-            // GPUI keeps every image in its atlas until told otherwise.
-            cx.drop_image(frame.image, None);
+        // GPUI keeps every image in its atlas until told otherwise.
+        match replaced {
+            Content::Frame(frame) => cx.drop_image(frame.image, None),
+            Content::Tokens(sheet) => {
+                for image in sheet.into_images() {
+                    cx.drop_image(image, None);
+                }
+            }
+            _ => {}
         }
         if let Content::Frame(frame) = &self.content {
             let layer_still_exists = self
@@ -716,6 +725,7 @@ impl Viewer {
             Content::Nothing | Content::Loading | Content::Frame(_) => {
                 self.render_canvas(cx).into_any_element()
             }
+            Content::Tokens(sheet) => project_pages::render_tokens(sheet, cx).into_any_element(),
             Content::Text(text) => div()
                 .id("text-content")
                 .size_full()
@@ -917,10 +927,7 @@ fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Resul
                 .context("this frame no longer exists")?;
             Ok(Content::Frame(frame_render::render_frame(project, file)?))
         }
-        Selection::Tokens => {
-            let tokens = project.tokens()?.resolved()?;
-            Ok(Content::Text(serde_json::to_string_pretty(&tokens)?))
-        }
+        Selection::Tokens => Ok(Content::Tokens(token_sheet::load(project)?)),
         Selection::Config => {
             let path = project.config_path();
             let text = fs::read_to_string(&path)
