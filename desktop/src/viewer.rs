@@ -494,7 +494,6 @@ impl Viewer {
         }
     }
 
-    /// The previous image stays up during a re-render, so this is what says it is stale.
     fn toggle_layer_highlight(&mut self, layer_id: String, cx: &mut Context<Self>) {
         let is_highlighted = self.highlighted_layer_id.as_ref() == Some(&layer_id);
         self.highlighted_layer_id = (!is_highlighted).then_some(layer_id);
@@ -529,6 +528,7 @@ impl Viewer {
         )
     }
 
+    /// The previous image stays up during a re-render, so this is what says it is stale.
     fn render_rendering_badge(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .absolute()
