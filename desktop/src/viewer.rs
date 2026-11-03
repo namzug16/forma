@@ -26,7 +26,7 @@ use notify::{Event, RecommendedWatcher};
 use serde_json::Value;
 
 use crate::asset_preview::{self, AssetKind, AssetPreview};
-use crate::frame_render::{self, RenderedFrame};
+use crate::frame_render::{self, DisplayTarget, RenderedFrame};
 use crate::frame_tree::{self, Selection};
 use crate::project_pages;
 use crate::project_watch::{self, WatchedPaths};
@@ -45,6 +45,8 @@ const TRAFFIC_LIGHTS_HEIGHT: f32 = 44.;
 
 /// Long enough to gather a burst of writes into one render without feeling late.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How long zooming or resizing must pause before the frame is rendered for its new size.
+const RESOLUTION_SETTLE: Duration = Duration::from_millis(150);
 const COPIED_NOTICE_DURATION: Duration = Duration::from_secs(2);
 
 const ZOOM_BUTTON_FACTOR: f32 = 1.25;
@@ -97,12 +99,16 @@ pub struct Viewer {
     viewport: Option<Viewport>,
     /// Filled in on paint: input events arrive in window coordinates.
     canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Filled in on paint, as the window can move to a display with another density.
+    display_scale_factor: Rc<Cell<f32>>,
     drag_position: Option<Point<Pixels>>,
     svg_export: SvgExport,
     /// Dropping it abandons an export, so a late one can't overwrite the clipboard.
     svg_export_task: Option<Task<()>>,
     /// Set while loading. Dropping it cancels a load that a newer change has replaced.
     load_task: Option<Task<()>>,
+    /// Waits for zooming or resizing to settle. Dropping it restarts the wait.
+    resolution_task: Option<Task<()>>,
     image_cache: ImageCache,
     _subscriptions: [Subscription; 2],
 }
@@ -142,10 +148,12 @@ impl Viewer {
             content: Content::Nothing,
             viewport: None,
             canvas_bounds: Rc::default(),
+            display_scale_factor: Rc::new(Cell::new(1.)),
             drag_position: None,
             svg_export: SvgExport::Idle,
             svg_export_task: None,
             load_task: None,
+            resolution_task: None,
             image_cache: ImageCache::default(),
             _subscriptions: subscriptions,
         };
@@ -174,8 +182,10 @@ impl Viewer {
         let project = self.project.clone();
         let frames = self.frames.clone();
         let image_cache = self.image_cache.clone();
-        let loading =
-            cx.background_spawn(async move { load(&project, &selection, &frames, &image_cache) });
+        let target = self.display_target();
+        let loading = cx.background_spawn(async move {
+            load(&project, &selection, &frames, &image_cache, target)
+        });
         self.load_task = Some(cx.spawn(async move |viewer, cx| {
             let content = loading
                 .await
@@ -475,6 +485,46 @@ impl Viewer {
         cx.notify();
     }
 
+    fn display_target(&self) -> DisplayTarget {
+        let canvas_size = self.canvas_bounds.get().size;
+        DisplayTarget {
+            canvas: size(canvas_size.width.into(), canvas_size.height.into()),
+            zoom: self.viewport.map(|viewport| viewport.zoom),
+            scale_factor: self.display_scale_factor.get(),
+        }
+    }
+
+    /// Renders the frame again once zooming, resizing or a change of display settles, so it is
+    /// neither magnified into blur nor rasterized far finer than it is shown.
+    fn rerender_if_resolution_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(frame) = self.displayed_frame() else {
+            return;
+        };
+        let Some(rendered_resolution) = frame.resolution else {
+            return;
+        };
+        let wanted_resolution = self
+            .display_target()
+            .resolution(size(frame.width, frame.height));
+        let is_sharp_enough = rendered_resolution >= wanted_resolution * 0.99;
+        let is_not_wasteful = rendered_resolution <= wanted_resolution * 2.;
+        if (is_sharp_enough && is_not_wasteful)
+            || self.load_task.is_some()
+            || self.resolution_task.is_some()
+        {
+            return;
+        }
+        self.resolution_task = Some(cx.spawn(async move |viewer, cx| {
+            cx.background_executor().timer(RESOLUTION_SETTLE).await;
+            viewer
+                .update(cx, |viewer, cx| {
+                    viewer.resolution_task = None;
+                    viewer.load_selection(cx);
+                })
+                .ok();
+        }));
+    }
+
     fn current_viewport(&self) -> Option<Viewport> {
         let frame = self.displayed_frame()?;
         let canvas_size = self.canvas_bounds.get().size;
@@ -497,6 +547,7 @@ impl Viewer {
                 ),
             );
             self.viewport = Some(viewport);
+            self.resolution_task = None;
             cx.notify();
         }
     }
@@ -741,8 +792,10 @@ impl Viewer {
     }
 
     fn render_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rerender_if_resolution_changed(cx);
         let viewport = self.current_viewport();
         let canvas_bounds = self.canvas_bounds.clone();
+        let display_scale_factor = self.display_scale_factor.clone();
         let secondary_text = cx.theme().muted_foreground;
         div()
             .id("canvas")
@@ -754,7 +807,10 @@ impl Viewer {
                 canvas(
                     move |bounds, window, _| {
                         let was_resized = canvas_bounds.replace(bounds).size != bounds.size;
-                        if was_resized {
+                        let was_moved_to_another_density = display_scale_factor
+                            .replace(window.scale_factor())
+                            != window.scale_factor();
+                        if was_resized || was_moved_to_another_density {
                             // This paint used the old size, so a fitted frame needs another.
                             window.on_next_frame(|window, _| window.refresh());
                         }
@@ -1072,6 +1128,7 @@ fn load(
     selection: &Selection,
     frames: &[FrameFile],
     image_cache: &ImageCache,
+    target: DisplayTarget,
 ) -> Result<Content> {
     match selection {
         Selection::Frame(relative_path) => {
@@ -1083,6 +1140,7 @@ fn load(
                 project,
                 file,
                 image_cache,
+                target,
             )?))
         }
         Selection::Asset(relative_path) => Ok(match asset_preview::load(project, relative_path)? {

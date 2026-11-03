@@ -97,6 +97,7 @@ pub fn load(project: &Project, relative_path: &Path) -> Result<AssetPreview> {
                 width: image.width() as f32,
                 height: image.height() as f32,
                 report: named_report(&file_name),
+                resolution: None,
             }))
         }
         AssetKind::Svg => {
@@ -162,6 +163,7 @@ fn draw(frame: &Value, project: &Project, file_name: &str) -> Result<AssetPrevie
         width: preview.width,
         height: preview.height,
         report: named_report(file_name),
+        resolution: None,
     }))
 }
 

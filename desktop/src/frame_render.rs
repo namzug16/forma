@@ -9,16 +9,21 @@ use forma::frames::{self, FrameFile};
 use forma::inspect;
 use forma::project::Project;
 use forma::renderer;
-use forma::scene::Scene;
 use forma::svg_export;
-use gpui_kit::RenderImage;
+use gpui_kit::{RenderImage, Size, size};
 use image::{Frame, RgbaImage};
 use serde_json::Value;
 use smallvec::smallvec;
 use tiny_skia::Pixmap;
 
-/// Keeps frames sharp on Retina displays and when zooming to 200%.
-const SHARP_SCALE_FACTOR: f64 = 2.0;
+use crate::viewport::Viewport;
+
+/// About what a fixed 2× render of a tall phone screenshot used to be, so zooming in never costs
+/// more than that did.
+// shortcut: a frame zoomed in past this is magnified and goes soft, render only the visible
+// region if close inspection matters
+const MAX_PREVIEW_PIXELS: f32 = 16_000_000.0;
+const MAX_PREVIEW_SIDE: f32 = 16384.0;
 
 pub struct RenderedFrame {
     pub image: Arc<RenderImage>,
@@ -26,6 +31,29 @@ pub struct RenderedFrame {
     pub width: f32,
     pub height: f32,
     pub report: Value,
+    /// Device pixels per design unit it was rendered for, or `None` if the zoom doesn't matter.
+    pub resolution: Option<f32>,
+}
+
+/// Where a frame is shown, so it is rasterized at that size rather than a fixed one.
+#[derive(Clone, Copy, Debug)]
+pub struct DisplayTarget {
+    /// In logical pixels.
+    pub canvas: Size<f32>,
+    /// `None` while the frame is fitted to the canvas.
+    pub zoom: Option<f32>,
+    /// Device pixels per logical pixel.
+    pub scale_factor: f32,
+}
+
+impl DisplayTarget {
+    /// Device pixels per design unit at which a frame of this size is shown.
+    pub fn resolution(&self, frame: Size<f32>) -> f32 {
+        let zoom = self
+            .zoom
+            .unwrap_or_else(|| Viewport::fitting(frame, self.canvas).zoom);
+        zoom * self.scale_factor
+    }
 }
 
 /// Builds fresh resources so edits to tokens and assets show up; only images unchanged on disk
@@ -34,16 +62,20 @@ pub fn render_frame(
     project: &Project,
     file: &FrameFile,
     image_cache: &ImageCache,
+    target: DisplayTarget,
 ) -> Result<RenderedFrame> {
     let resources = project.resources_with_image_cache(image_cache.clone())?;
     let scene = frames::load_scene(file, &resources)?;
-    let scale = display_scale(&scene, project.config.render.scale);
-    let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;
+    let frame_size = size(scene.width as f32, scene.height as f32);
+    let resolution = target.resolution(frame_size);
+    let (width, height) = raster_size(frame_size, resolution);
+    let canvas = renderer::render_to_size(&scene, width, height).map_err(Failure::from)?;
     Ok(RenderedFrame {
         image: to_render_image(&canvas),
-        width: scene.width as f32,
-        height: scene.height as f32,
+        width: frame_size.width,
+        height: frame_size.height,
         report: inspect::report(&scene, None)?,
+        resolution: Some(resolution),
     })
 }
 
@@ -54,14 +86,13 @@ pub fn export_svg(project: &Project, file: &FrameFile) -> Result<String> {
     Ok(svg_export::to_svg(&scene))
 }
 
-/// Falls back to the project's own scale for frames too large to double.
-fn display_scale(scene: &Scene, project_scale: f64) -> f64 {
-    let sharp_scale = project_scale * SHARP_SCALE_FACTOR;
-    if renderer::output_size(scene, sharp_scale).is_ok() {
-        sharp_scale
-    } else {
-        project_scale
-    }
+fn raster_size(frame: Size<f32>, resolution: f32) -> (u32, u32) {
+    let affordable_resolution = (MAX_PREVIEW_PIXELS / (frame.width * frame.height))
+        .sqrt()
+        .min(MAX_PREVIEW_SIDE / frame.width.max(frame.height));
+    let resolution = resolution.min(affordable_resolution);
+    let pixels = |design_units: f32| (design_units * resolution).round().max(1.) as u32;
+    (pixels(frame.width), pixels(frame.height))
 }
 
 pub fn to_render_image(canvas: &Pixmap) -> Arc<RenderImage> {
@@ -92,6 +123,30 @@ mod tests {
     use tiny_skia::PremultipliedColorU8;
 
     use super::*;
+
+    #[test]
+    fn a_fitted_frame_is_rasterized_at_its_size_on_screen() {
+        let target = DisplayTarget {
+            canvas: size(800., 1000.),
+            zoom: None,
+            scale_factor: 2.,
+        };
+        let frame = size(1320., 2868.);
+
+        let resolution = target.resolution(frame);
+
+        assert_eq!(raster_size(frame, resolution), (828, 1800));
+    }
+
+    #[test]
+    fn a_deep_zoom_is_capped_to_the_preview_budget() {
+        let frame = size(1320., 2868.);
+
+        let (width, height) = raster_size(frame, 64.);
+
+        assert!((width * height) as f32 <= MAX_PREVIEW_PIXELS * 1.001);
+        assert!((height as f32 - width as f32 * 2868. / 1320.).abs() <= 1.);
+    }
 
     #[test]
     fn half_transparent_pixels_keep_their_color() {
