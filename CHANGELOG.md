@@ -2,6 +2,13 @@
 
 Each release's section is published as its GitHub release notes.
 
+## 0.2.0 - 2026-11-03
+
+### CLI
+
+- `forma render --format svg` writes a frame as SVG with text as outlines, to paste into tools
+  such as Figma. With `--clipboard` the markup is copied as text. `--scale` does not apply to SVG.
+
 ## 0.1.0 - 2026-11-03
 
 The first release, for Apple silicon Macs. Windows and Linux are coming soon.

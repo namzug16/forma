@@ -1849,7 +1849,7 @@ dependencies = [
 
 [[package]]
 name = "forma"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "forma-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "forma",
