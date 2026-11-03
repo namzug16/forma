@@ -15,7 +15,7 @@ use futures::StreamExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
@@ -1784,6 +1784,7 @@ impl Viewer {
 
     fn render_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut sections = Vec::new();
+        let mut layer_sections = Vec::new();
         if let Some(group) = &self.group {
             let failure = group
                 .selected_frame
@@ -1867,7 +1868,7 @@ impl Viewer {
                     .and_then(|layer_id| frame.authored_layers.get(layer_id))
                     .map(Vec::as_slice)
                     .unwrap_or_default();
-                sections.extend(layer_details::render(layer, authored, cx));
+                layer_sections = layer_details::render(layer, authored, cx);
             }
             let mut layer_rows = Vec::new();
             self.push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
@@ -1886,12 +1887,34 @@ impl Viewer {
             .bg(cx.theme().background)
             .child(self.render_details_header(cx))
             .child(
-                div()
-                    .id("details")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(sections),
+                // A pane of its own, so opening a layer never moves the list it was picked from.
+                div().flex_1().min_h_0().child(
+                    v_resizable("details-split")
+                        .child(
+                            resizable_panel().child(
+                                div()
+                                    .id("details")
+                                    .size_full()
+                                    .overflow_y_scrollbar()
+                                    .children(sections),
+                            ),
+                        )
+                        .child(
+                            resizable_panel()
+                                .visible(!layer_sections.is_empty())
+                                .size(px(320.))
+                                .size_range(px(120.)..px(800.))
+                                .child(
+                                    div()
+                                        .id("layer-details")
+                                        .size_full()
+                                        .border_t_1()
+                                        .border_color(cx.theme().border)
+                                        .overflow_y_scrollbar()
+                                        .children(layer_sections),
+                                ),
+                        ),
+                ),
             )
     }
 }
