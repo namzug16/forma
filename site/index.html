@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forma — the agent-first design engine</title>
+  <meta name="description" content="Forma is a headless 2D design engine. Describe a frame in JSON, share one set of design tokens, and render PNGs from a local CLI.">
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500&family=JetBrains+Mono:wght@400&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="wordmark" href="#top" aria-label="Forma home">
+      <img src="logo.svg" alt="" width="20" height="20"> FORMA
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="#features">FEATURES</a>, <a href="#install">INSTALL</a>, <a href="https://github.com/namzug16/forma">GITHUB</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1 class="hero-statement">
+        The agent-first design engine you need.
+        <span class="hero-statement-rest">Your agent writes JSON, Forma renders the pixels. One set of tokens,
+        one local CLI, the same PNG every time. No browser, no account, no network.</span>
+      </h1>
+
+      <figure class="hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 227 227">
+          <rect class="hero-mark-square" width="227" height="227"/>
+          <circle class="hero-mark-hole" cx="113" cy="114" r="77"/>
+        </svg>
+        <span class="hero-mark-bounds"></span>
+        <span class="hero-mark-label hero-mark-label-size">227 × 227</span>
+        <span class="hero-mark-label hero-mark-label-id">#logo</span>
+      </figure>
+
+      <a class="hero-cta" href="#install">INSTALL FORMA ↓</a>
+    </section>
+
+    <section class="brand reveal" aria-labelledby="brand-title">
+      <h2 class="label" id="brand-title">YOUR BRAND, NOT THE MODEL'S</h2>
+      <p class="brand-statement">
+        No more AI images that ignore your conventions.
+        <span class="brand-statement-rest">Every frame draws from your colors, your type and your logo,
+        so whatever your agent makes already looks like you made it.</span>
+      </p>
+      <ul class="brand-tokens" aria-label="Example design tokens and assets">
+        <li><span class="brand-swatch" style="background: #262626"></span>$colors.ink</li>
+        <li><span class="brand-swatch" style="background: #f7f7e7"></span>$colors.paper</li>
+        <li><span class="brand-swatch" style="background: #ff5b2e"></span>$colors.accent</li>
+        <li><span class="brand-swatch brand-swatch-type">Aa</span>$typography.heading</li>
+        <li><span class="brand-swatch brand-swatch-logo"></span>svg/logo.svg</li>
+      </ul>
+    </section>
+
+    <section class="demo reveal" aria-labelledby="demo-title">
+      <h2 class="label" id="demo-title">JSON IN, PNG OUT</h2>
+      <div class="demo-grid">
+        <pre class="demo-code"><code><span class="code-line">{</span>
+<span class="code-line">  "id": "post", "width": 1080, "height": 1080,</span>
+<span class="code-line code-layer code-layer-1">  "background": "$gradients.brand",</span>
+<span class="code-line">  "children": [</span>
+<span class="code-line code-layer code-layer-2">    { "type": "rect", "id": "card",</span>
+<span class="code-line code-layer code-layer-2">      "fill": { "color": "$colors.paper" } },</span>
+<span class="code-line code-layer code-layer-3">    { "type": "ellipse", "id": "sun",</span>
+<span class="code-line code-layer code-layer-3">      "fill": { "color": "$colors.ink" } },</span>
+<span class="code-line code-layer code-layer-4">    { "type": "text", "id": "headline",</span>
+<span class="code-line code-layer code-layer-4">      "text": "DESIGN\nAS CODE",</span>
+<span class="code-line code-layer code-layer-4">      "font": "$typography.heading" }</span>
+<span class="code-line">  ]</span>
+<span class="code-line">}</span></code></pre>
+        <div class="demo-output">
+          <div class="demo-frame post-frame" role="img" aria-label="Rendered frame: a card with a dark circle and the words Design as code">
+            <div class="demo-layer demo-layer-1"></div>
+            <div class="demo-layer demo-layer-2"></div>
+            <div class="demo-layer demo-layer-3"></div>
+            <div class="demo-layer demo-layer-4">DESIGN<br>AS CODE</div>
+          </div>
+          <p class="demo-caption"><span class="prompt">$</span> forma render post <span class="demo-result">→ forma/output/post.png</span></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo reveal" aria-labelledby="artwork-title">
+      <h2 class="label" id="artwork-title">NOT ENOUGH? LET YOUR AGENT GET CREATIVE</h2>
+      <p class="demo-intro">Some visuals are grown, not composed. Your agent writes a small sandboxed script
+        and Forma turns it into an image, with no input from you: flow fields, topographic maps,
+        terrains, starfields, halftones, particle bursts, film grain. Frames use the result like any other image.</p>
+      <div class="demo-grid">
+        <pre class="demo-code"><code>-- forma/artworks/flow.lua
+return {
+  width = 1080, height = 1080, seed = 7,
+  draw = function(canvas, tokens, random, noise)
+    canvas:clear("$colors.ink")
+    for line = 1, 600 do
+      local x, y = random(0, 1080), random(0, 1080)
+      local segments = { { "move", x, y } }
+      for step = 1, 40 do
+        local angle = noise(x / 300, y / 300) * math.pi * 4
+        x = x + math.cos(angle) * 8
+        y = y + math.sin(angle) * 8
+        segments[#segments + 1] = { "line", x, y }
+      end
+      canvas:path { segments = segments, opacity = 0.7,
+        stroke = { color = "$colors.paper", width = 2 } }
+    end
+  end,
+}</code></pre>
+        <div class="demo-output">
+          <svg class="demo-frame artwork-frame" viewBox="0 0 1080 1080" role="img" aria-label="A flow field: hundreds of pale lines following smooth Perlin noise currents"></svg>
+          <p class="demo-caption"><span class="prompt">$</span> forma generate flow <span class="artwork-result">→ forma/assets/artworks/flow.png</span></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo reveal" aria-labelledby="photo-title">
+      <h2 class="label" id="photo-title">BRING YOUR OWN IMAGES</h2>
+      <p class="demo-intro">Photos, screenshots and product shots live in <code>forma/assets/images</code>.
+        PNG, JPEG or WebP, fitted with <code>cover</code>, <code>contain</code> or <code>fill</code>, and layered under your type and logo.</p>
+      <div class="demo-grid">
+        <pre class="demo-code"><code><span class="code-line">{</span>
+<span class="code-line">  "id": "offsite", "width": 1200, "height": 800,</span>
+<span class="code-line">  "children": [</span>
+<span class="code-line code-layer code-layer-1">    { "type": "image", "id": "photo",</span>
+<span class="code-line code-layer code-layer-1">      "src": "images/ridge.jpg", "fit": "cover" },</span>
+<span class="code-line code-layer code-layer-2">    { "type": "rect", "id": "shade",</span>
+<span class="code-line code-layer code-layer-2">      "fill": "$gradients.shade" },</span>
+<span class="code-line code-layer code-layer-3">    { "type": "text", "id": "title",</span>
+<span class="code-line code-layer code-layer-3">      "text": "OFFSITE\nAUTUMN 26",</span>
+<span class="code-line code-layer code-layer-3">      "font": "$typography.heading" },</span>
+<span class="code-line code-layer code-layer-4">    { "type": "svg", "id": "logo",</span>
+<span class="code-line code-layer code-layer-4">      "src": "svg/logo.svg", "color": "$colors.paper" }</span>
+<span class="code-line">  ]</span>
+<span class="code-line">}</span></code></pre>
+        <div class="demo-output">
+          <div class="demo-frame photo-frame" role="img" aria-label="Rendered frame: a sunset over layered hills with the words Offsite Autumn 26 and the Forma logo">
+            <img class="demo-layer demo-layer-1" src="ridge.jpg" alt="">
+            <div class="demo-layer demo-layer-2"></div>
+            <div class="demo-layer demo-layer-3">OFFSITE<br>AUTUMN 26</div>
+            <img class="demo-layer demo-layer-4" src="logo.svg" alt="">
+          </div>
+          <p class="demo-caption"><span class="prompt">$</span> forma render offsite <span class="demo-result">→ forma/output/offsite.png</span></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" id="features" aria-labelledby="features-title">
+      <h2 class="label" id="features-title">FEATURES</h2>
+      <ol class="feature-list">
+        <li class="feature reveal">
+          <h3>FRAMES AS JSON</h3>
+          <p>Seven layer types: rect, ellipse, line, text, image, svg and group. Fills, strokes, linear and radial gradients, clipping and masks.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>SHARED TOKENS</h3>
+          <p>One <code>tokens.json</code> for every frame. Reference <code>$colors.primary</code>; references are typed and cycle-checked.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>BUILT FOR AGENTS</h3>
+          <p><code>validate</code>, <code>inspect</code> and <code>schema</code> with stable <code>--json</code> output. Errors carry a code, a JSON path and the layer id.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>REPRODUCIBLE</h3>
+          <p>Same inputs, same bytes. Checked-in fonts render the same on every machine, so renders can run in CI.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>LIVES IN YOUR REPO</h3>
+          <p>A <code>forma/</code> folder next to your code. Plain files you can diff, review and commit.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>FONTS</h3>
+          <p>Project, system or Fontsource fonts. <code>forma fonts add Inter</code> installs static files with their license.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>ICONS</h3>
+          <p>Search and add Lucide icons, recolored through <code>currentColor</code> with a token.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>ARTWORKS</h3>
+          <p>Sandboxed Lua scripts draw patterns, particles and noise into images that frames use like any asset.</p>
+        </li>
+        <li class="feature reveal">
+          <h3>DESKTOP VIEWER</h3>
+          <p>A read-only macOS app that follows the project live while agents work. Copy any frame as SVG into Figma.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="install" id="install" aria-labelledby="install-title">
+      <h2 class="label" id="install-title">INSTALL</h2>
+
+      <div class="install-tabs">
+        <input type="radio" name="install-mode" id="install-mode-agent" checked>
+        <label for="install-mode-agent">AGENT</label>
+        <input type="radio" name="install-mode" id="install-mode-manual">
+        <label for="install-mode-manual">MANUAL</label>
+
+        <div class="install-panel install-panel-agent">
+          <p class="install-hint">Paste this into Claude Code, Codex, Cursor or any coding agent.</p>
+          <div class="copy-block">
+            <pre><code>Install Forma, a headless CLI that renders designs from JSON frames and design tokens to PNG.
+
+1. Check the machine is an Apple silicon Mac; Forma does not support other platforms yet.
+2. Install the CLI with Homebrew: brew install namzug16/tap/forma
+   If Homebrew is missing, use: curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh
+3. Confirm it works: forma version
+4. Install the Forma agent skill: npx skills add namzug16/forma
+5. In this repo, run forma init, then forma render example, and show me forma/output/example.png.</code></pre>
+            <button class="copy-button" type="button">COPY</button>
+          </div>
+        </div>
+
+        <div class="install-panel install-panel-manual">
+          <p class="install-hint">Apple silicon Macs. Windows and Linux are coming soon.</p>
+
+          <h3 class="step">01 — INSTALL THE CLI</h3>
+          <div class="copy-block">
+            <pre><code>brew install namzug16/tap/forma</code></pre>
+            <button class="copy-button" type="button">COPY</button>
+          </div>
+          <p class="step-or">or, without Homebrew, to <code>~/.local/bin</code></p>
+          <div class="copy-block">
+            <pre><code>curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh</code></pre>
+            <button class="copy-button" type="button">COPY</button>
+          </div>
+
+          <h3 class="step">02 — ADD THE AGENT SKILL</h3>
+          <div class="copy-block">
+            <pre><code>npx skills add namzug16/forma</code></pre>
+            <button class="copy-button" type="button">COPY</button>
+          </div>
+
+          <h3 class="step">03 — RENDER YOUR FIRST FRAME</h3>
+          <div class="copy-block">
+            <pre><code>forma init
+forma render example</code></pre>
+            <button class="copy-button" type="button">COPY</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo figma reveal" aria-labelledby="figma-title">
+      <h2 class="label" id="figma-title">FINISH IT IN FIGMA</h2>
+      <p class="demo-intro">Your agent gets you most of the way there. Render the frame as SVG, with text as
+        outlines, paste it into Figma, and every layer is yours to move, restyle and ship.</p>
+      <div class="demo-grid">
+        <div class="figma-terminal" aria-label="Terminal">
+          <p class="figma-line figma-line-1"><span class="prompt">$</span> forma render launch</p>
+          <p class="figma-line figma-line-2 figma-output">forma/output/launch.png (1080×1080)</p>
+          <p class="figma-line figma-line-3"><span class="prompt">$</span> forma render launch --format svg --clipboard</p>
+          <p class="figma-line figma-line-4 figma-output">clipboard (1080×1080)</p>
+          <p class="figma-line figma-line-5 figma-output">⌘V in Figma</p>
+        </div>
+        <div class="figma-canvas" role="img" aria-label="A design canvas where the pasted frame's layers are dragged into new positions">
+          <span class="figma-canvas-title">launch — pasted from forma</span>
+          <div class="figma-paste">
+            <div class="figma-layer figma-background"></div>
+            <div class="figma-layer figma-card"></div>
+            <div class="figma-layer figma-sun"></div>
+            <div class="figma-layer figma-headline">LAUNCH<br>DAY</div>
+            <svg class="figma-cursor" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 2l7 19 2.5-8L21 10z"/></svg>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div>
+      <h2 class="label">SOURCE</h2>
+      <a href="https://github.com/namzug16/forma">GITHUB</a><br>
+      <a href="https://github.com/namzug16/forma/blob/master/CHANGELOG.md">CHANGELOG</a>
+    </div>
+    <div>
+      <h2 class="label">PLATFORM</h2>
+      APPLE SILICON MACS<br>
+      WINDOWS, LINUX SOON
+    </div>
+    <div>
+      <h2 class="label">LICENSE</h2>
+      MIT
+    </div>
+  </footer>
+
+  <script src="vendor/anime.umd.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
