@@ -1,6 +1,7 @@
 //! The resolved, renderer-independent scene: tokens are values and geometry is computed.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Serialize;
 use usvg::Tree;
@@ -184,7 +185,7 @@ pub enum SceneKind {
         line_count: usize,
     },
     Image {
-        image: tiny_skia::Pixmap,
+        image: Arc<tiny_skia::Pixmap>,
         source: PathBuf,
         fit: ImageFit,
     },

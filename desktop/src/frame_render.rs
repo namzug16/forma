@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use forma::assets::ImageCache;
 use forma::diagnostics::Failure;
 use forma::frames::{self, FrameFile};
 use forma::inspect;
@@ -27,9 +28,14 @@ pub struct RenderedFrame {
     pub report: Value,
 }
 
-/// Builds fresh resources so edits to tokens and assets show up.
-pub fn render_frame(project: &Project, file: &FrameFile) -> Result<RenderedFrame> {
-    let resources = project.resources()?;
+/// Builds fresh resources so edits to tokens and assets show up; only images unchanged on disk
+/// come from `image_cache`.
+pub fn render_frame(
+    project: &Project,
+    file: &FrameFile,
+    image_cache: &ImageCache,
+) -> Result<RenderedFrame> {
+    let resources = project.resources_with_image_cache(image_cache.clone())?;
     let scene = frames::load_scene(file, &resources)?;
     let scale = display_scale(&scene, project.config.render.scale);
     let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;

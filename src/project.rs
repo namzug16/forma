@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::assets::Assets;
+use crate::assets::{Assets, ImageCache};
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::frames::FrameFile;
 use crate::scene::Resources;
@@ -222,9 +222,14 @@ impl Project {
     }
 
     pub fn resources(&self) -> Result<Resources> {
+        self.resources_with_image_cache(ImageCache::default())
+    }
+
+    /// For a caller that renders again and again, such as a viewer following edits.
+    pub fn resources_with_image_cache(&self, image_cache: ImageCache) -> Result<Resources> {
         Ok(Resources {
             tokens: self.tokens()?,
-            assets: Assets::new(self.assets_directory()),
+            assets: Assets::with_image_cache(self.assets_directory(), image_cache),
             fonts: FontLibrary::default(),
         })
     }

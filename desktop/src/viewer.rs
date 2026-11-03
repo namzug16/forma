@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
+use forma::assets::ImageCache;
 use forma::diagnostics::Failure;
 use forma::frames::{self, FrameFile};
 use forma::project::Project;
@@ -102,6 +103,7 @@ pub struct Viewer {
     svg_export_task: Option<Task<()>>,
     /// Set while loading. Dropping it cancels a load that a newer change has replaced.
     load_task: Option<Task<()>>,
+    image_cache: ImageCache,
     _subscriptions: [Subscription; 2],
 }
 
@@ -144,6 +146,7 @@ impl Viewer {
             svg_export: SvgExport::Idle,
             svg_export_task: None,
             load_task: None,
+            image_cache: ImageCache::default(),
             _subscriptions: subscriptions,
         };
         viewer.start_watching(cx);
@@ -170,7 +173,9 @@ impl Viewer {
         };
         let project = self.project.clone();
         let frames = self.frames.clone();
-        let loading = cx.background_spawn(async move { load(&project, &selection, &frames) });
+        let image_cache = self.image_cache.clone();
+        let loading =
+            cx.background_spawn(async move { load(&project, &selection, &frames, &image_cache) });
         self.load_task = Some(cx.spawn(async move |viewer, cx| {
             let content = loading
                 .await
@@ -1062,14 +1067,23 @@ impl Viewer {
     }
 }
 
-fn load(project: &Project, selection: &Selection, frames: &[FrameFile]) -> Result<Content> {
+fn load(
+    project: &Project,
+    selection: &Selection,
+    frames: &[FrameFile],
+    image_cache: &ImageCache,
+) -> Result<Content> {
     match selection {
         Selection::Frame(relative_path) => {
             let file = frames
                 .iter()
                 .find(|file| file.relative_path.as_ref() == Some(relative_path))
                 .context("this frame no longer exists")?;
-            Ok(Content::Frame(frame_render::render_frame(project, file)?))
+            Ok(Content::Frame(frame_render::render_frame(
+                project,
+                file,
+                image_cache,
+            )?))
         }
         Selection::Asset(relative_path) => Ok(match asset_preview::load(project, relative_path)? {
             AssetPreview::Drawn(frame) => Content::Frame(frame),

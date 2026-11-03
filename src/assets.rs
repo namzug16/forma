@@ -1,8 +1,11 @@
 //! Reading project assets, confined to the configured assets directory.
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use image::{ImageReader, Limits};
 use tiny_skia::{IntSize, Pixmap};
@@ -62,14 +65,36 @@ pub fn is_safe_slug(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+/// Decoded images kept across renders, so a large photo is decoded once rather than on every
+/// edit. A file whose modification time or size changed is decoded again.
+// shortcut: entries for deleted or renamed files stay until the cache is dropped, add eviction if
+// a long session's memory grows
+#[derive(Debug, Default, Clone)]
+pub struct ImageCache(Arc<Mutex<HashMap<PathBuf, CachedImage>>>);
+
+#[derive(Debug)]
+struct CachedImage {
+    modified: SystemTime,
+    byte_size: u64,
+    image: Arc<Pixmap>,
+}
+
 #[derive(Debug)]
 pub struct Assets {
     directory: PathBuf,
+    image_cache: ImageCache,
 }
 
 impl Assets {
     pub fn new(directory: PathBuf) -> Self {
-        Self { directory }
+        Self::with_image_cache(directory, ImageCache::default())
+    }
+
+    pub fn with_image_cache(directory: PathBuf, image_cache: ImageCache) -> Self {
+        Self {
+            directory,
+            image_cache,
+        }
     }
 
     /// Canonicalizing first means neither `..` nor a symlink can reach outside the directory.
@@ -171,10 +196,44 @@ impl Assets {
         &self,
         relative_path: &str,
         path: &str,
-    ) -> Result<(PathBuf, Pixmap), Diagnostic> {
+    ) -> Result<(PathBuf, Arc<Pixmap>), Diagnostic> {
+        let resolved = self.resolve(relative_path, path)?;
+        // Read before the file, so a write in between only costs one more decode next time.
+        let stamp = fs::metadata(&resolved)
+            .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+            .ok();
+        let mut cached_images = self
+            .image_cache
+            .0
+            .lock()
+            .expect("no decode panics while locked");
+        if let (Some((modified, byte_size)), Some(cached)) = (stamp, cached_images.get(&resolved))
+            && cached.modified == modified
+            && cached.byte_size == byte_size
+        {
+            return Ok((resolved, cached.image.clone()));
+        }
+        drop(cached_images);
         let (resolved, bytes) = self.read(relative_path, path)?;
-        let image = decode_image(&bytes, &resolved)
-            .map_err(|message| Diagnostic::new("invalid_image", message).at(path))?;
+        let image = Arc::new(
+            decode_image(&bytes, &resolved)
+                .map_err(|message| Diagnostic::new("invalid_image", message).at(path))?,
+        );
+        if let Some((modified, byte_size)) = stamp {
+            cached_images = self
+                .image_cache
+                .0
+                .lock()
+                .expect("no decode panics while locked");
+            cached_images.insert(
+                resolved.clone(),
+                CachedImage {
+                    modified,
+                    byte_size,
+                    image: image.clone(),
+                },
+            );
+        }
         Ok((resolved, image))
     }
 
@@ -283,6 +342,32 @@ mod tests {
             let error = assets.read(escaping_path, "src").unwrap_err();
             assert_eq!(error.code, "asset_outside_project", "{escaping_path}");
         }
+    }
+
+    #[test]
+    fn a_cached_image_is_decoded_again_once_its_file_changes() {
+        let assets_directory = tempfile::tempdir().unwrap();
+        let write_png = |width| {
+            let mut pixmap = Pixmap::new(width, 1).unwrap();
+            pixmap.fill(tiny_skia::Color::WHITE);
+            pixmap
+                .save_png(assets_directory.path().join("photo.png"))
+                .unwrap();
+        };
+        write_png(1);
+        let image_cache = ImageCache::default();
+        let load = || {
+            Assets::with_image_cache(assets_directory.path().into(), image_cache.clone())
+                .load_image("photo.png", "src")
+                .unwrap()
+                .1
+        };
+
+        let first = load();
+        assert!(Arc::ptr_eq(&first, &load()));
+
+        write_png(2);
+        assert_eq!(load().width(), 2);
     }
 
     #[test]
