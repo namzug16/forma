@@ -66,14 +66,30 @@ pub fn checked_raster_size(width: f64, height: f64) -> Result<(u32, u32), Diagno
 
 pub fn render(scene: &Scene, scale: f64) -> Result<Pixmap, Diagnostic> {
     let (width, height) = output_size(scene, scale)?;
-    let mut canvas = Pixmap::new(width, height).expect("output_size rejects empty rasters");
-    let root = Affine::scale(scale, scale);
+    Ok(rasterize(scene, width, height, Affine::scale(scale, scale)))
+}
+
+/// Stretches `scene` to exactly `width`×`height`, for a preview drawn at whatever size it is
+/// shown. Rounding a size to whole pixels can skew the aspect ratio by a fraction of a pixel,
+/// which [`render`] refuses for real output.
+pub fn render_to_size(scene: &Scene, width: u32, height: u32) -> Result<Pixmap, Diagnostic> {
+    checked_raster_size(f64::from(width), f64::from(height))?;
+    let root = Affine::scale(
+        f64::from(width) / scene.width,
+        f64::from(height) / scene.height,
+    );
+    Ok(rasterize(scene, width, height, root))
+}
+
+/// `width` and `height` must come from [`checked_raster_size`].
+fn rasterize(scene: &Scene, width: u32, height: u32, root: Affine) -> Pixmap {
+    let mut canvas = Pixmap::new(width, height).expect("checked_raster_size rejects empty rasters");
     if let Some(background) = &scene.background {
         let bounds = Bounds::sized(scene.width, scene.height);
         fill_rect(&mut canvas, bounds, 0.0, background, root);
     }
     draw_nodes(&scene.nodes, &mut canvas, root);
-    Ok(canvas)
+    canvas
 }
 
 pub fn write_png(canvas: &Pixmap, path: &Path) -> Result<()> {
@@ -757,6 +773,18 @@ mod tests {
         // Halfway out along each axis is equally far through the gradient.
         assert_near(pixel(&canvas, 150, 50), [127, 127, 127, 255]);
         assert_near(pixel(&canvas, 100, 75), [127, 127, 127, 255]);
+    }
+
+    #[test]
+    fn render_to_size_stretches_the_frame_to_fill_the_raster() {
+        let scene = scene_json(&frame_with(&red_square("square", 90, 0)), "{}");
+
+        let canvas = render_to_size(&scene, 50, 20).unwrap();
+
+        assert_eq!((canvas.width(), canvas.height()), (50, 20));
+        assert_eq!(pixel(&canvas, 47, 0), RED);
+        assert_eq!(pixel(&canvas, 47, 3), EMPTY);
+        assert_eq!(pixel(&canvas, 42, 0), EMPTY);
     }
 
     #[test]
