@@ -3,6 +3,8 @@
 An agent-first, headless 2D design engine. Define one frame in JSON, compose it from layers and
 shared design tokens, and render it to PNG with a local CLI. No browser, account or network needed.
 
+**Website: [forma.namzug.dev](https://forma.namzug.dev)**
+
 ## Install
 
 Forma runs on Apple silicon Macs for now. Windows and Linux are coming soon.
