@@ -1,6 +1,6 @@
 [package]
 name = "forma-desktop"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Read-only macOS viewer for Forma projects"
 license = "MIT"

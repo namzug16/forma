@@ -1,12 +1,15 @@
 [package]
 name = "forma"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Agent-first, headless 2D design engine"
 license = "MIT"
 
 [workspace]
 members = ["desktop"]
+
+[workspace.package]
+version = "0.1.0"
 
 [dependencies]
 anyhow = "1.0.104"
