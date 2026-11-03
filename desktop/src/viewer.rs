@@ -31,6 +31,7 @@ use crate::frame_tree::{self, Selection};
 use crate::project_pages;
 use crate::project_watch::{self, WatchedPaths};
 use crate::recent_projects;
+use crate::render_cache::RenderCache;
 use crate::style;
 use crate::token_sheet::{self, TokenSheet};
 use crate::viewport::Viewport;
@@ -65,7 +66,8 @@ enum SvgExport {
 enum Content {
     Nothing,
     Loading,
-    Frame(RenderedFrame),
+    /// Shared with the render cache, which owns its image in the atlas.
+    Frame(Arc<RenderedFrame>),
     Tokens(TokenSheet),
     Config,
     /// A file forma has no way of drawing.
@@ -113,6 +115,7 @@ pub struct Viewer {
     /// Waits for zooming or resizing to settle. Dropping it restarts the wait.
     resolution_task: Option<Task<()>>,
     image_cache: ImageCache,
+    render_cache: RenderCache,
     _subscriptions: [Subscription; 2],
 }
 
@@ -159,6 +162,7 @@ impl Viewer {
             is_reload_pending: false,
             resolution_task: None,
             image_cache: ImageCache::default(),
+            render_cache: RenderCache::default(),
             _subscriptions: subscriptions,
         };
         viewer.start_watching(cx);
@@ -168,13 +172,21 @@ impl Viewer {
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         if self.selection.as_ref() != Some(&selection) {
-            self.selection = Some(selection);
+            self.selection = Some(selection.clone());
             self.highlighted_layer_id = None;
             self.hovered_layer_id = None;
             self.reset_svg_export();
             self.viewport = None;
-            self.show(Content::Loading, cx);
-            self.load_selection(cx);
+            let cached = self
+                .render_cache
+                .get(&selection)
+                .map(|cached| (Content::Frame(cached.frame.clone()), cached.is_stale));
+            let (content, is_stale) = cached.unwrap_or((Content::Loading, true));
+            self.show(content, cx);
+            // A fresh render shown at another size is redone by `rerender_if_resolution_changed`.
+            if is_stale {
+                self.load_selection(cx);
+            }
         }
     }
 
@@ -192,6 +204,7 @@ impl Viewer {
         let frames = self.frames.clone();
         let image_cache = self.image_cache.clone();
         let target = self.display_target();
+        self.render_cache.start_render(&selection);
         let loading = cx.background_spawn(async move {
             load(&project, &selection, &frames, &image_cache, target)
         });
@@ -202,6 +215,9 @@ impl Viewer {
             viewer
                 .update(cx, |viewer, cx| {
                     viewer.load_task = None;
+                    if let Content::Frame(frame) = &content {
+                        viewer.cache_render(loaded_selection.clone(), frame.clone(), cx);
+                    }
                     // A stale render of the same selection still beats what is on screen.
                     if viewer.selection.as_ref() == Some(&loaded_selection) {
                         viewer.show(content, cx);
@@ -217,15 +233,11 @@ impl Viewer {
 
     fn show(&mut self, content: Content, cx: &mut Context<Self>) {
         let replaced = std::mem::replace(&mut self.content, content);
-        // GPUI keeps every image in its atlas until told otherwise.
-        match replaced {
-            Content::Frame(frame) => cx.drop_image(frame.image, None),
-            Content::Tokens(sheet) => {
-                for image in sheet.into_images() {
-                    cx.drop_image(image, None);
-                }
+        // GPUI keeps every image in its atlas until told otherwise; frames are freed by the cache.
+        if let Content::Tokens(sheet) = replaced {
+            for image in sheet.into_images() {
+                cx.drop_image(image, None);
             }
-            _ => {}
         }
         if let Content::Frame(frame) = &self.content {
             let layer_still_exists =
@@ -236,8 +248,22 @@ impl Viewer {
         cx.notify();
     }
 
+    fn cache_render(
+        &mut self,
+        selection: Selection,
+        frame: Arc<RenderedFrame>,
+        cx: &mut Context<Self>,
+    ) {
+        let shown_selection = self.selection.clone();
+        let evicted = self.render_cache.insert(selection, frame, |key| {
+            shown_selection.as_ref() == Some(key)
+        });
+        free_frames(evicted, cx);
+    }
+
     fn adopt_project(&mut self, project: Project, cx: &mut Context<Self>) {
         self.project = Arc::new(project);
+        self.render_cache.mark_stale(|_| true);
         self.project_failure.clear();
         self.start_watching(cx);
         self.sync_tree(cx);
@@ -304,6 +330,15 @@ impl Viewer {
             _ => None,
         };
         let effects = watched_paths.effects_of(&changed_paths, selected_frame);
+        self.render_cache.mark_stale(|key| {
+            let frame = match key {
+                Selection::Frame(relative_path) => Some(relative_path.as_path()),
+                _ => None,
+            };
+            watched_paths
+                .effects_of(&changed_paths, frame)
+                .reload_selection
+        });
         if effects.reload_project || !self.project_failure.is_empty() {
             self.reload_project(cx);
             return;
@@ -336,6 +371,15 @@ impl Viewer {
         }
         self.frames = frames;
         self.assets = assets;
+        let deleted = self.render_cache.remove(|key| match key {
+            Selection::Frame(relative_path) => !self
+                .frames
+                .iter()
+                .any(|file| file.relative_path.as_ref() == Some(relative_path)),
+            Selection::Asset(relative_path) => !self.assets.contains(relative_path),
+            _ => false,
+        });
+        free_frames(deleted, cx);
         let items = frame_tree::build_items(&self.frames, &self.assets, &self.collapsed_folders);
         self.tree_state.update(cx, |tree_state, cx| {
             let selected_id = tree_state.selected_item().map(|item| item.id.clone());
@@ -929,7 +973,7 @@ impl Viewer {
 
     fn displayed_frame(&self) -> Option<&RenderedFrame> {
         match &self.content {
-            Content::Frame(frame) => Some(frame),
+            Content::Frame(frame) => Some(frame.as_ref()),
             _ => None,
         }
     }
@@ -1150,15 +1194,15 @@ fn load(
                 .iter()
                 .find(|file| file.relative_path.as_ref() == Some(relative_path))
                 .context("this frame no longer exists")?;
-            Ok(Content::Frame(frame_render::render_frame(
+            Ok(Content::Frame(Arc::new(frame_render::render_frame(
                 project,
                 file,
                 image_cache,
                 target,
-            )?))
+            )?)))
         }
         Selection::Asset(relative_path) => Ok(match asset_preview::load(project, relative_path)? {
-            AssetPreview::Drawn(frame) => Content::Frame(frame),
+            AssetPreview::Drawn(frame) => Content::Frame(Arc::new(frame)),
             AssetPreview::NotPreviewable {
                 file_name,
                 byte_size,
@@ -1320,6 +1364,13 @@ fn layer_bounds(layers: &Value, layer_id: &str) -> Option<Bounds<f32>> {
             size(number("width")?, number("height")?),
         ))
     })
+}
+
+/// GPUI keeps every image in its atlas until told otherwise.
+fn free_frames(frames: Vec<Arc<RenderedFrame>>, cx: &mut App) {
+    for frame in frames {
+        cx.drop_image(frame.image.clone(), None);
+    }
 }
 
 /// One line per diagnostic, in the same words the CLI uses.

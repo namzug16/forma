@@ -6,6 +6,7 @@ mod frame_tree;
 mod project_pages;
 mod project_watch;
 mod recent_projects;
+mod render_cache;
 mod style;
 mod token_sheet;
 mod viewer;
