@@ -3,8 +3,22 @@
 An agent-first, headless 2D design engine. Define one frame in JSON, compose it from layers and
 shared design tokens, and render it to PNG with a local CLI. No browser, account or network needed.
 
+## Install
+
+Forma runs on Apple silicon Macs for now. Windows and Linux are coming soon.
+
 ```sh
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh
+# or
+brew install namzug16/tap/forma
+```
+
+The curl script installs to `~/.local/bin`; set `FORMA_INSTALL_DIR` to change that. To build from a
+checkout, run `cargo install --path .`.
+
+## Quick start
+
+```sh
 forma init                  # create forma/ in the current directory
 forma                       # list frames and whether they are valid
 forma validate example      # check a frame, with field-level errors
@@ -183,8 +197,13 @@ vary between machines, so use font files for output that must match everywhere.
 
 ## Desktop viewer
 
-`desktop/` is a read-only macOS app (macOS 15 or later) for watching a project while agents
-work on it. It renders in memory and never writes to the project.
+`desktop/` is a read-only macOS app (macOS 15 or later on Apple silicon) for watching a project
+while agents work on it. It renders in memory and never writes to the project. Windows and Linux
+versions are coming soon.
+
+[Download Forma for macOS](https://github.com/namzug16/forma/releases/latest/download/Forma-macos-arm64.dmg),
+open the DMG and drag Forma to Applications. The app is not notarized yet, so macOS blocks the first
+launch: try to open it, then choose **Open Anyway** in System Settings > Privacy & Security.
 
 ```sh
 make desktop      # run from source
@@ -210,6 +229,11 @@ Figma.
 
 `cargo test` needs internet access: the install tests download from the real Iconify and Fontsource
 services, so a change on their side fails a test instead of reaching users.
+
+To release, set `version` under `[workspace.package]` in `Cargo.toml`, add a `## 0.2.0 - DATE`
+section to `CHANGELOG.md`, commit, then push a matching tag such as `v0.2.0`.
+`.github/workflows/release.yml` tests that commit, publishes the DMG and CLI to a GitHub release
+with that changelog section as its notes, and updates the Homebrew tap.
 
 ## License
 

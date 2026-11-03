@@ -8,8 +8,8 @@ description: Set up and use Forma, a headless CLI that renders designs from JSON
 Forma turns JSON frames into PNGs. A project is a `forma/` directory that sits inside any repo, next
 to whatever else lives there.
 
-Run `command -v forma` first. If it is missing, stop and tell the user: Forma is installed from a
-source checkout with `cargo install --path <checkout>`.
+Run `command -v forma` first. If it is missing, stop and tell the user: Forma is installed with
+`brew install namzug16/tap/forma`.
 
 If `forma/config.json` exists in the repo, skip to [Designing](#designing). Otherwise start with
 [Setting up](#setting-up).

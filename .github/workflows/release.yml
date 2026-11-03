@@ -1,0 +1,50 @@
+name: Release
+
+# Pushing a tag like v0.2.0 tests that commit, builds the macOS artifacts and
+# publishes them as a GitHub release, then updates the Homebrew tap.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Check the tag matches the crate version
+        run: grep -qx "version = \"${TAG#v}\"" Cargo.toml
+      # The desktop build compiles Metal shaders, and Xcode 26 ships without the compiler.
+      - name: Install the Metal toolchain
+        run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - run: cargo test --workspace --locked
+      - run: make release-artifacts
+      - name: Publish the GitHub release
+        run: |
+          awk -v heading="## ${TAG#v} " '/^## / { in_section = index($0, heading) == 1; next } in_section' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md" || { echo "CHANGELOG.md has no section for ${TAG#v}"; exit 1; }
+          gh release create "$TAG" target/dist/* --title "Forma ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Update the Homebrew tap
+        run: |
+          git clone "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/namzug16/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          archive_sha256="$(shasum -a 256 target/dist/forma-macos-arm64.tar.gz | cut -d ' ' -f 1)"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          scripts/homebrew-formula.sh "${TAG#v}" "$archive_sha256" > "$RUNNER_TEMP/tap/Formula/forma.rb"
+          cd "$RUNNER_TEMP/tap"
+          git add Formula/forma.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "forma ${TAG#v}"
+          git push
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
