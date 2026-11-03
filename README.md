@@ -7,14 +7,49 @@ shared design tokens, and render it to PNG with a local CLI. No browser, account
 
 Forma runs on Apple silicon Macs for now. Windows and Linux are coming soon.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh
-# or
-brew install namzug16/tap/forma
+### With an agent
+
+Paste this into Claude Code, Codex, Cursor or any coding agent:
+
+```text
+Install Forma, a headless CLI that renders designs from JSON frames and design tokens to PNG.
+
+1. Check the machine is an Apple silicon Mac; Forma does not support other platforms yet.
+2. Install the CLI with Homebrew: brew install namzug16/tap/forma
+   If Homebrew is missing, use: curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh
+3. Confirm it works: forma version
+4. Install the Forma agent skill: npx skills add namzug16/forma
+5. In this repo, run forma init, then forma render example, and show me forma/output/example.png.
 ```
 
-The curl script installs to `~/.local/bin`; set `FORMA_INSTALL_DIR` to change that. To build from a
-checkout, run `cargo install --path .`.
+### Manually
+
+1. Install the CLI:
+
+   ```sh
+   brew install namzug16/tap/forma
+   ```
+
+   Or, without Homebrew, to `~/.local/bin` (set `FORMA_INSTALL_DIR` to change that):
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/namzug16/forma/master/install.sh | sh
+   ```
+
+2. Add the agent skill:
+
+   ```sh
+   npx skills add namzug16/forma
+   ```
+
+3. Render your first frame:
+
+   ```sh
+   forma init
+   forma render example
+   ```
+
+To build from a checkout, run `cargo install --path .`.
 
 ## Quick start
 
