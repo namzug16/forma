@@ -41,7 +41,7 @@ Commit `forma/` except `forma/output/`, which `forma init` adds to `.gitignore`.
 |---|---|
 | `forma init [--path DIR]` | Create a project. Never overwrites existing files. |
 | `forma`, `forma list` | List frames with sizes and validity. |
-| `forma render FRAME [--output PATH \| --clipboard] [--scale N]` | Render one frame to a file, or to the clipboard without writing a file. |
+| `forma render FRAME [--output PATH \| --clipboard] [--scale N] [--format png\|svg]` | Render one frame to a file, or to the clipboard without writing a file. SVG outlines text and pastes into Figma. |
 | `forma render --all` | Render every frame. |
 | `forma generate [ARTWORK] [--seed N]` | Run one artwork, or every artwork, into `forma/assets/artworks/`. |
 | `forma validate FRAME`, `forma validate --all` | Check frames without rendering. |

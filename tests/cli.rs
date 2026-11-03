@@ -439,6 +439,19 @@ fn a_frame_goes_from_init_through_validate_render_and_inspect() {
     assert!(forma(&root, &["render", "post"]).status.success());
     assert_eq!(fs::read(&output_path).unwrap(), first_bytes);
 
+    // SVG goes next to the PNG, at the frame's logical size.
+    let svg = succeed(&root, &["render", "post", "--format", "svg", "--json"]);
+    let svg_path = project.join("output/post.svg");
+    assert_eq!(svg["output"], svg_path.to_str().unwrap());
+    assert_eq!(svg["format"], "svg");
+    assert_eq!(
+        (svg["width"].as_u64(), svg["height"].as_u64()),
+        (Some(1080), Some(1080))
+    );
+    assert!(fs::read_to_string(&svg_path).unwrap().starts_with("<svg"));
+    let jpeg = forma(&root, &["render", "post", "--format", "jpeg", "--json"]);
+    assert_eq!(error_code(&jpeg), "unsupported_format");
+
     // Scale changes raster size only, and sources are protected.
     let scaled = root.join("scaled.png");
     let scaled_render = forma(

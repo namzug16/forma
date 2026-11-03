@@ -105,7 +105,8 @@ the rest of the repo stays exactly as it was.
    ```
 
    Replace each match with a token, unless the user asked for it or it is a deliberate one-off.
-7. Tell the user where the PNG is, and mention any deliberate exception.
+7. Tell the user where the PNG is, and mention any deliberate exception. If they want to keep
+   editing it in Figma, run `forma render NAME --format svg --clipboard` and tell them to paste.
 
 If a design needs something the system lacks, add it to `tokens.json` or `DESIGN.md` and say so,
 instead of leaving a one-off in the frame. Rules then keep working in the next session.

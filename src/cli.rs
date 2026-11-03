@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::artwork::{self, ArtworkFile};
-use crate::assets::Assets;
+use crate::assets::{self, Assets};
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document;
 use crate::fonts::{self, FontFamily, FontInfo, FontSource, InstallOrigin, InstallReport};
@@ -21,6 +21,7 @@ use crate::inspect;
 use crate::project::{self, Project};
 use crate::renderer;
 use crate::scene::Resources;
+use crate::svg_export;
 use crate::text::FontLibrary;
 use crate::tokens::Tokens;
 
@@ -60,13 +61,13 @@ pub enum Command {
         /// Destination file
         #[arg(long, conflicts_with = "all")]
         output: Option<PathBuf>,
-        /// Output format (only png in V1)
+        /// Output format: png, or svg with text as outlines (default: the project's render.format)
         #[arg(long)]
         format: Option<String>,
-        /// Multiplies raster dimensions, not logical coordinates
+        /// Multiplies raster dimensions, not logical coordinates; svg ignores it
         #[arg(long)]
         scale: Option<f64>,
-        /// Copy the rendered bitmap to the clipboard instead of writing a file
+        /// Copy the render to the clipboard instead of writing a file; svg is copied as text
         #[arg(long, conflicts_with_all = ["all", "output"])]
         clipboard: bool,
     },
@@ -266,14 +267,17 @@ struct RenderOptions<'a> {
 
 fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> Result<ExitCode> {
     let project = open_project(arguments)?;
-    let format = options.format.unwrap_or(&project.config.render.format);
-    if format != "png" {
-        return Err(Failure::from(Diagnostic::new(
-            "unsupported_format",
-            format!("format \"{format}\" is not supported; V1 renders png"),
-        ))
-        .into());
-    }
+    let format = match options.format.unwrap_or(&project.config.render.format) {
+        "png" => "png",
+        "svg" => "svg",
+        format => {
+            return Err(Failure::from(Diagnostic::new(
+                "unsupported_format",
+                format!("format \"{format}\" is not supported; use png or svg"),
+            ))
+            .into());
+        }
+    };
     let resources = project.resources()?;
     let files = selected_frames(&project, frame)?;
 
@@ -281,7 +285,7 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
         let [file] = files.as_slice() else {
             unreachable!("one reference selects one frame");
         };
-        let result = render_frame(&project, &resources, file, options)?;
+        let result = render_frame(&project, &resources, file, format, options)?;
         print_render_result(&result, arguments.json);
         return Ok(ExitCode::SUCCESS);
     }
@@ -289,7 +293,7 @@ fn run_render(arguments: &Cli, frame: Option<&str>, options: &RenderOptions) -> 
     let mut all_succeeded = true;
     let mut results = Vec::new();
     for file in &files {
-        match render_frame(&project, &resources, file, options) {
+        match render_frame(&project, &resources, file, format, options) {
             Ok(result) => {
                 print_render_warnings(&result);
                 if !arguments.json {
@@ -432,17 +436,37 @@ struct RenderResult {
     warnings: Vec<Diagnostic>,
 }
 
+enum Rendered {
+    Png(tiny_skia::Pixmap),
+    Svg(String),
+}
+
 fn render_frame(
     project: &Project,
     resources: &Resources,
     file: &FrameFile,
+    format: &'static str,
     options: &RenderOptions,
 ) -> Result<RenderResult> {
     let scene = frames::load_scene(file, resources)?;
-    let scale = options.scale.unwrap_or(project.config.render.scale);
-    let canvas = renderer::render(&scene, scale).map_err(Failure::from)?;
+    let rendered = if format == "svg" {
+        Rendered::Svg(svg_export::to_svg(&scene))
+    } else {
+        let scale = options.scale.unwrap_or(project.config.render.scale);
+        Rendered::Png(renderer::render(&scene, scale).map_err(Failure::from)?)
+    };
+    let (width, height) = match &rendered {
+        Rendered::Png(canvas) => (canvas.width(), canvas.height()),
+        Rendered::Svg(_) => renderer::output_size(&scene, 1.0).map_err(Failure::from)?,
+    };
     let output = if options.copy_to_clipboard {
-        renderer::copy_to_clipboard(&canvas).map_err(|error| {
+        match &rendered {
+            Rendered::Png(canvas) => renderer::copy_to_clipboard(canvas),
+            Rendered::Svg(markup) => {
+                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(markup))
+            }
+        }
+        .map_err(|error| {
             Failure::from(Diagnostic::new(
                 "clipboard_unavailable",
                 format!("cannot copy the render to the clipboard: {error}"),
@@ -452,7 +476,7 @@ fn render_frame(
     } else {
         let output = match options.output {
             Some(path) => absolute_output_path(path)?,
-            None => project.default_output_path(file),
+            None => project.default_output_path(file).with_extension(format),
         };
         if output == file.path || project.is_source_path(&output) {
             return Err(Failure::from(Diagnostic::new(
@@ -461,16 +485,20 @@ fn render_frame(
             ))
             .into());
         }
-        renderer::write_png(&canvas, &output)?;
+        match &rendered {
+            Rendered::Png(canvas) => renderer::write_png(canvas, &output)?,
+            Rendered::Svg(markup) => assets::write_atomically(&output, markup.as_bytes())
+                .with_context(|| format!("cannot write {}", output.display()))?,
+        }
         Some(output)
     };
     Ok(RenderResult {
         success: true,
         frame: scene.id,
         output,
-        width: canvas.width(),
-        height: canvas.height(),
-        format: "png",
+        width,
+        height,
+        format,
         warnings: scene.warnings,
     })
 }
