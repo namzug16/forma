@@ -2,16 +2,19 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use forma::assets::ImageCache;
 use forma::diagnostics::Failure;
+use forma::document;
 use forma::frames::{self, FrameFile};
 use forma::inspect;
 use forma::project::Project;
 use forma::renderer;
 use forma::svg_export;
+use forma::tokens::Tokens;
 use gpui_kit::{RenderImage, Size, size};
 use image::{Frame, RgbaImage};
 use serde_json::Value;
@@ -89,6 +92,17 @@ pub fn render_frame(
         resolution: Some(resolution),
         authored_layers: layer_details::authored_properties(&authored_frame, &tokens),
     })
+}
+
+/// The frame's size without rendering it, or `None` if its file doesn't parse.
+pub fn frame_size(frame_path: &Path, tokens: &Tokens) -> Option<Size<f32>> {
+    let text = fs::read_to_string(frame_path).ok()?;
+    let header = document::parse_frame(&text).ok()?.header;
+    let length = |value, path| tokens.number(value, path).ok().map(|length| length as f32);
+    Some(size(
+        length(&header.width, "width")?,
+        length(&header.height, "height")?,
+    ))
 }
 
 /// Reads the file again, so the export is of what's on disk at the moment it was asked for.

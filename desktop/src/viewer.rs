@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,22 +13,25 @@ use forma::frames::{self, FrameFile};
 use forma::project::Project;
 use futures::StreamExt as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tree::{TreeEvent, TreeState, tree};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use notify::{Event, RecommendedWatcher};
 use serde_json::Value;
 
 use crate::asset_preview::{self, AssetKind, AssetPreview};
+use crate::frame_group::{self, Arrangement, GroupLayout};
 use crate::frame_render::{self, DisplayTarget, RenderedFrame};
 use crate::frame_tree::{self, Selection};
-use crate::layer_details;
+use crate::layer_details::{self, format_number};
 use crate::project_pages;
 use crate::project_watch::{self, WatchedPaths};
 use crate::recent_projects;
@@ -51,6 +54,12 @@ const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 const RESOLUTION_SETTLE: Duration = Duration::from_millis(150);
 const COPIED_NOTICE_DURATION: Duration = Duration::from_secs(2);
 
+/// Holds the place of a group frame whose size can't be read from its file.
+const FALLBACK_FRAME_SIDE: f32 = 1080.;
+const SPACING_STEP: f32 = 16.;
+/// How far the pointer may move between press and release for it to still be a click, not a pan.
+const CLICK_SLOP: f32 = 4.;
+
 const ZOOM_BUTTON_FACTOR: f32 = 1.25;
 /// Scroll distance that doubles the zoom is about 70 pixels.
 const ZOOM_PER_SCROLL_PIXEL: f32 = 0.01;
@@ -69,6 +78,8 @@ enum Content {
     Loading,
     /// Shared with the render cache, which owns its image in the atlas.
     Frame(Arc<RenderedFrame>),
+    /// The frames themselves are in the viewer's `group`.
+    Group,
     Tokens(TokenSheet),
     Config,
     /// A file forma has no way of drawing.
@@ -78,6 +89,18 @@ enum Content {
     },
     /// Why the selection cannot be shown.
     Failed(Vec<String>),
+}
+
+/// The open group's frames and how far along rendering them is.
+struct GroupView {
+    folder: PathBuf,
+    frames: Vec<PathBuf>,
+    /// Read from the frame files, so frames not rendered yet hold their place at the right size.
+    sizes: HashMap<PathBuf, Size<f32>>,
+    failures: HashMap<PathBuf, Vec<String>>,
+    queue: VecDeque<PathBuf>,
+    rendering: Option<PathBuf>,
+    selected_frame: Option<PathBuf>,
 }
 
 pub struct Viewer {
@@ -98,6 +121,9 @@ pub struct Viewer {
     /// The layer under the pointer in the layers panel; outlined instead of the clicked one.
     hovered_layer_id: Option<String>,
     content: Content,
+    group: Option<GroupView>,
+    /// By folder, for this session only.
+    group_layouts: HashMap<PathBuf, GroupLayout>,
     /// `None` while the frame simply fits the canvas, until the user pans or zooms.
     viewport: Option<Viewport>,
     /// Filled in on paint: input events arrive in window coordinates.
@@ -105,6 +131,8 @@ pub struct Viewer {
     /// Filled in on paint, as the window can move to a display with another density.
     display_scale_factor: Rc<Cell<f32>>,
     drag_position: Option<Point<Pixels>>,
+    /// Where the left button went down, to tell a click on the canvas from a pan.
+    press_position: Option<Point<Pixels>>,
     svg_export: SvgExport,
     /// Dropping it abandons an export, so a late one can't overwrite the clipboard.
     svg_export_task: Option<Task<()>>,
@@ -153,10 +181,13 @@ impl Viewer {
             highlighted_layer_id: None,
             hovered_layer_id: None,
             content: Content::Nothing,
+            group: None,
+            group_layouts: HashMap::new(),
             viewport: None,
             canvas_bounds: Rc::default(),
             display_scale_factor: Rc::new(Cell::new(1.)),
             drag_position: None,
+            press_position: None,
             svg_export: SvgExport::Idle,
             svg_export_task: None,
             load_task: None,
@@ -178,6 +209,21 @@ impl Viewer {
             self.hovered_layer_id = None;
             self.reset_svg_export();
             self.viewport = None;
+            if let Selection::Group(folder) = &selection {
+                self.group = Some(GroupView {
+                    folder: folder.clone(),
+                    frames: Vec::new(),
+                    sizes: HashMap::new(),
+                    failures: HashMap::new(),
+                    queue: VecDeque::new(),
+                    rendering: None,
+                    selected_frame: None,
+                });
+                self.show(Content::Group, cx);
+                self.refresh_group(cx);
+                return;
+            }
+            self.group = None;
             let cached = self
                 .render_cache
                 .get(&selection)
@@ -193,6 +239,10 @@ impl Viewer {
 
     /// Reloads what is selected, leaving the current content up until the result arrives.
     fn load_selection(&mut self, cx: &mut Context<Self>) {
+        if self.group.is_some() {
+            self.queue_group_renders(cx);
+            return;
+        }
         if self.load_task.is_some() {
             self.is_reload_pending = true;
             return;
@@ -225,11 +275,268 @@ impl Viewer {
                     }
                     if std::mem::take(&mut viewer.is_reload_pending) {
                         viewer.load_selection(cx);
+                    } else {
+                        viewer.render_next_in_group(cx);
                     }
                 })
                 .ok();
         }));
         cx.notify();
+    }
+
+    /// Matches the open group to the frames on disk and renders what it is missing.
+    fn refresh_group(&mut self, cx: &mut Context<Self>) {
+        let Some(group) = &mut self.group else {
+            return;
+        };
+        group.frames = frame_group::frames_in(&self.frames, &group.folder);
+        let frames = &group.frames;
+        group
+            .sizes
+            .retain(|relative_path, _| frames.contains(relative_path));
+        group
+            .failures
+            .retain(|relative_path, _| frames.contains(relative_path));
+        group
+            .queue
+            .retain(|relative_path| frames.contains(relative_path));
+        if group
+            .selected_frame
+            .as_ref()
+            .is_some_and(|relative_path| !frames.contains(relative_path))
+        {
+            group.selected_frame = None;
+            self.highlighted_layer_id = None;
+            self.hovered_layer_id = None;
+        }
+        // shortcut: reads new frames' files on the main thread, move it to the background if
+        // groups of hundreds of frames make opening one stutter
+        let tokens = self.project.tokens().ok();
+        for relative_path in &group.frames {
+            let key = Selection::Frame(relative_path.clone());
+            if group.sizes.contains_key(relative_path) || self.render_cache.peek(&key).is_some() {
+                continue;
+            }
+            let file = self
+                .frames
+                .iter()
+                .find(|file| file.relative_path.as_ref() == Some(relative_path));
+            let frame_size = tokens
+                .as_ref()
+                .zip(file)
+                .and_then(|(tokens, file)| frame_render::frame_size(&file.path, tokens));
+            if let Some(frame_size) = frame_size {
+                group.sizes.insert(relative_path.clone(), frame_size);
+            }
+        }
+        self.queue_group_renders(cx);
+    }
+
+    /// Queues the group's frames that are missing, stale or rendered for another zoom, with the
+    /// selected one first.
+    fn queue_group_renders(&mut self, cx: &mut Context<Self>) {
+        let target = self.display_target();
+        let Some(group) = &mut self.group else {
+            return;
+        };
+        for relative_path in &group.frames {
+            if group.queue.contains(relative_path)
+                || group.rendering.as_ref() == Some(relative_path)
+            {
+                continue;
+            }
+            let needs_render = match self
+                .render_cache
+                .peek(&Selection::Frame(relative_path.clone()))
+            {
+                Some(cached) => cached.is_stale || resolution_is_off(&cached.frame, target),
+                None => !group.failures.contains_key(relative_path),
+            };
+            if needs_render {
+                group.queue.push_back(relative_path.clone());
+            }
+        }
+        let selected_index = group.selected_frame.as_ref().and_then(|selected_frame| {
+            group
+                .queue
+                .iter()
+                .position(|relative_path| relative_path == selected_frame)
+        });
+        if let Some(selected) = selected_index.and_then(|index| group.queue.remove(index)) {
+            group.queue.push_front(selected);
+        }
+        self.render_next_in_group(cx);
+    }
+
+    /// Renders the next queued group frame. It shares `load_task` with `load_selection`, so only
+    /// one render runs at a time.
+    fn render_next_in_group(&mut self, cx: &mut Context<Self>) {
+        if self.load_task.is_some() {
+            return;
+        }
+        let target = self.display_target();
+        let Some(group) = &mut self.group else {
+            return;
+        };
+        let next = std::iter::from_fn(|| group.queue.pop_front()).find_map(|relative_path| {
+            let file = self
+                .frames
+                .iter()
+                .find(|file| file.relative_path.as_ref() == Some(&relative_path))?;
+            Some((relative_path, file.clone()))
+        });
+        let Some((relative_path, file)) = next else {
+            return;
+        };
+        group.rendering = Some(relative_path.clone());
+        let key = Selection::Frame(relative_path.clone());
+        self.render_cache.start_render(&key);
+        let project = self.project.clone();
+        let image_cache = self.image_cache.clone();
+        let rendering = cx.background_spawn(async move {
+            frame_render::render_frame(&project, &file, &image_cache, target)
+        });
+        self.load_task = Some(cx.spawn(async move |viewer, cx| {
+            let rendered = rendering.await;
+            viewer
+                .update(cx, |viewer, cx| {
+                    viewer.load_task = None;
+                    if let Some(group) = &mut viewer.group {
+                        if group.rendering.as_ref() == Some(&relative_path) {
+                            group.rendering = None;
+                        }
+                        match &rendered {
+                            Ok(_) => group.failures.remove(&relative_path),
+                            Err(error) => group
+                                .failures
+                                .insert(relative_path.clone(), failure_messages(error)),
+                        };
+                    }
+                    if let Ok(frame) = rendered {
+                        viewer.cache_render(key, Arc::new(frame), cx);
+                    }
+                    cx.notify();
+                    if std::mem::take(&mut viewer.is_reload_pending) {
+                        viewer.load_selection(cx);
+                    } else {
+                        viewer.render_next_in_group(cx);
+                    }
+                })
+                .ok();
+        }));
+        cx.notify();
+    }
+
+    fn select_group_frame(&mut self, relative_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(group) = &mut self.group else {
+            return;
+        };
+        if group.selected_frame != relative_path {
+            group.selected_frame = relative_path;
+            self.highlighted_layer_id = None;
+            self.hovered_layer_id = None;
+            self.reset_svg_export();
+            // Moves a stale selected frame to the front of the queue.
+            self.queue_group_renders(cx);
+        }
+        cx.notify();
+    }
+
+    fn change_group_layout(
+        &mut self,
+        change: impl FnOnce(&mut GroupLayout, usize),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = &self.group else {
+            return;
+        };
+        let layout = self.group_layouts.entry(group.folder.clone()).or_default();
+        change(layout, group.frames.len());
+        cx.notify();
+    }
+
+    /// Each frame of the open group with its box in design units, and the size of the whole
+    /// arrangement.
+    fn group_arrangement(&self) -> (Vec<(PathBuf, Bounds<f32>)>, Size<f32>) {
+        let Some(group) = &self.group else {
+            return (Vec::new(), Size::default());
+        };
+        let sizes: Vec<Size<f32>> = group
+            .frames
+            .iter()
+            .map(|relative_path| {
+                let cached = self
+                    .render_cache
+                    .peek(&Selection::Frame(relative_path.clone()));
+                match (cached, group.sizes.get(relative_path)) {
+                    (Some(cached), _) => size(cached.frame.width, cached.frame.height),
+                    (None, Some(frame_size)) => *frame_size,
+                    (None, None) => size(FALLBACK_FRAME_SIDE, FALLBACK_FRAME_SIDE),
+                }
+            })
+            .collect();
+        let layout = self
+            .group_layouts
+            .get(&group.folder)
+            .copied()
+            .unwrap_or_default();
+        let (origins, total) = frame_group::arrange(&sizes, &layout);
+        let placements = group
+            .frames
+            .iter()
+            .cloned()
+            .zip(origins)
+            .zip(sizes)
+            .map(|((relative_path, origin), frame_size)| {
+                (relative_path, Bounds::new(origin, frame_size))
+            })
+            .collect();
+        (placements, total)
+    }
+
+    /// Each group frame's box in canvas coordinates.
+    fn group_frame_boxes(&self, viewport: Viewport) -> Vec<(PathBuf, Bounds<f32>)> {
+        let zoom = viewport.zoom;
+        self.group_arrangement()
+            .0
+            .into_iter()
+            .map(|(relative_path, frame_box)| {
+                let canvas_box = Bounds::new(
+                    point(
+                        viewport.offset.x + frame_box.origin.x * zoom,
+                        viewport.offset.y + frame_box.origin.y * zoom,
+                    ),
+                    size(frame_box.size.width * zoom, frame_box.size.height * zoom),
+                );
+                (relative_path, canvas_box)
+            })
+            .collect()
+    }
+
+    fn click_canvas(&mut self, window_position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(viewport) = self.current_viewport() else {
+            return;
+        };
+        let origin = self.canvas_bounds.get().origin;
+        let position = point(
+            f32::from(window_position.x - origin.x),
+            f32::from(window_position.y - origin.y),
+        );
+        let clicked = self
+            .group_frame_boxes(viewport)
+            .into_iter()
+            .find(|(_, frame_box)| {
+                let with_name = Bounds::new(
+                    point(frame_box.origin.x, frame_box.origin.y - FRAME_LABEL_OFFSET),
+                    size(
+                        frame_box.size.width,
+                        frame_box.size.height + FRAME_LABEL_OFFSET,
+                    ),
+                );
+                with_name.contains(&position)
+            })
+            .map(|(relative_path, _)| relative_path);
+        self.select_group_frame(clicked, cx);
     }
 
     fn show(&mut self, content: Content, cx: &mut Context<Self>) {
@@ -256,8 +563,15 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) {
         let shown_selection = self.selection.clone();
+        let group_frames = self.group.as_ref().map(|group| group.frames.as_slice());
         let evicted = self.render_cache.insert(selection, frame, |key| {
-            shown_selection.as_ref() == Some(key)
+            let is_in_group = match key {
+                Selection::Frame(relative_path) => {
+                    group_frames.is_some_and(|frames| frames.contains(relative_path))
+                }
+                _ => false,
+            };
+            shown_selection.as_ref() == Some(key) || is_in_group
         });
         free_frames(evicted, cx);
     }
@@ -340,6 +654,13 @@ impl Viewer {
                 .effects_of(&changed_paths, frame)
                 .reload_selection
         });
+        if let Some(group) = &mut self.group {
+            group.failures.retain(|relative_path, _| {
+                !watched_paths
+                    .effects_of(&changed_paths, Some(relative_path))
+                    .reload_selection
+            });
+        }
         if effects.reload_project || !self.project_failure.is_empty() {
             self.reload_project(cx);
             return;
@@ -347,7 +668,8 @@ impl Viewer {
         if effects.refresh_tree {
             self.sync_tree(cx);
         }
-        if effects.reload_selection {
+        // A group only queues the frames that changed.
+        if effects.reload_selection || self.group.is_some() {
             self.load_selection(cx);
         }
     }
@@ -381,6 +703,12 @@ impl Viewer {
             _ => false,
         });
         free_frames(deleted, cx);
+        self.rebuild_tree(cx);
+        self.clear_selection_if_deleted(cx);
+        self.refresh_group(cx);
+    }
+
+    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let items = frame_tree::build_items(&self.frames, &self.assets, &self.collapsed_folders);
         self.tree_state.update(cx, |tree_state, cx| {
             let selected_id = tree_state.selected_item().map(|item| item.id.clone());
@@ -388,7 +716,14 @@ impl Viewer {
             let selected_index = selected_id.and_then(|id| tree_state.index_of(&id));
             tree_state.set_selected_index(selected_index, cx);
         });
-        self.clear_selection_if_deleted(cx);
+    }
+
+    /// Group rows open their group when clicked, so only their chevron expands them.
+    fn toggle_folder(&mut self, folder_id: SharedString, cx: &mut Context<Self>) {
+        if !self.collapsed_folders.remove(&folder_id) {
+            self.collapsed_folders.insert(folder_id);
+        }
+        self.rebuild_tree(cx);
     }
 
     fn clear_selection_if_deleted(&mut self, cx: &mut Context<Self>) {
@@ -398,10 +733,16 @@ impl Viewer {
                 .iter()
                 .any(|file| file.relative_path.as_ref() == Some(selected_path)),
             Some(Selection::Asset(selected_path)) => self.assets.contains(selected_path),
+            Some(Selection::Group(folder)) => self.frames.iter().any(|file| {
+                file.relative_path
+                    .as_ref()
+                    .is_some_and(|relative_path| relative_path.starts_with(folder))
+            }),
             _ => true,
         };
         if !still_exists {
             self.selection = None;
+            self.group = None;
             self.highlighted_layer_id = None;
             self.hovered_layer_id = None;
             self.reset_svg_export();
@@ -410,8 +751,10 @@ impl Viewer {
         }
     }
 
-    fn render_tree(&self) -> impl IntoElement {
-        tree(&self.tree_state, |index, entry, is_selected, _, cx| {
+    fn render_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewer = cx.entity().downgrade();
+        let tree_state = self.tree_state.clone();
+        tree(&self.tree_state, move |index, entry, is_selected, _, cx| {
             if entry.is_disabled() {
                 return ListItem::new(index)
                     .h(px(TREE_ROW_HEIGHT))
@@ -419,25 +762,44 @@ impl Viewer {
             }
             let secondary_text = cx.theme().muted_foreground;
             let is_frames_root = entry.is_folder() && entry.depth() == 0;
-            let item_icon = match Selection::from_item_id(&entry.item().id) {
+            let selection = Selection::from_item_id(&entry.item().id);
+            let is_group = matches!(selection, Some(Selection::Group(_)));
+            let item_icon = match selection {
                 Some(Selection::Frame(_)) => Some(IconName::Frame),
                 Some(Selection::Asset(relative_path)) => Some(asset_icon(&relative_path)),
                 Some(Selection::Tokens) => Some(IconName::Palette),
                 Some(Selection::Config) => Some(IconName::Settings2),
                 None if is_frames_root => None,
-                None if entry.is_expanded() => Some(IconName::FolderOpen),
-                None => Some(IconName::Folder),
+                Some(Selection::Group(_)) | None if entry.is_expanded() => {
+                    Some(IconName::FolderOpen)
+                }
+                Some(Selection::Group(_)) | None => Some(IconName::Folder),
             };
             let disclosure = entry.is_folder().then(|| {
-                icon(
-                    if entry.is_expanded() {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    },
-                    secondary_text,
-                )
+                let folder_id = entry.item().id.clone();
+                let viewer = viewer.clone();
+                div()
+                    .id(("disclosure", index))
+                    .child(icon(
+                        if entry.is_expanded() {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        },
+                        secondary_text,
+                    ))
+                    .when(is_group, |disclosure| {
+                        disclosure.on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            viewer
+                                .update(cx, |viewer, cx| {
+                                    viewer.toggle_folder(folder_id.clone(), cx)
+                                })
+                                .ok();
+                        })
+                    })
             });
+            let tree_state = tree_state.clone();
             ListItem::new(index)
                 .h(px(TREE_ROW_HEIGHT))
                 .py_0()
@@ -445,6 +807,15 @@ impl Viewer {
                 .pl(px(8. + 16. * entry.depth() as f32))
                 .rounded(cx.theme().radius)
                 .text_size(px(13.))
+                .when(is_group, |row| {
+                    // Selects without the tree's own toggle, which the chevron does instead.
+                    row.on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        tree_state.update(cx, |tree_state, cx| {
+                            tree_state.set_selected_index(Some(index), cx);
+                        });
+                    })
+                })
                 .child(
                     h_flex()
                         .gap_1p5()
@@ -526,13 +897,16 @@ impl Viewer {
                             .flex_col()
                             .bg(cx.theme().sidebar)
                             .child(self.render_project_header(cx))
-                            .child(div().flex_1().min_h_0().p_2().child(self.render_tree())),
+                            .child(div().flex_1().min_h_0().p_2().child(self.render_tree(cx))),
                     ),
             )
             .child(resizable_panel().child(self.render_content(cx)))
             .child(
                 resizable_panel()
-                    .visible(matches!(self.selection, Some(Selection::Frame(_))))
+                    .visible(matches!(
+                        self.selection,
+                        Some(Selection::Frame(_) | Selection::Group(_))
+                    ))
                     .size(px(260.))
                     .size_range(px(200.)..px(600.))
                     .child(self.render_details(cx)),
@@ -546,9 +920,14 @@ impl Viewer {
 
     fn display_target(&self) -> DisplayTarget {
         let canvas_size = self.canvas_bounds.get().size;
+        // Group frames share the group's zoom rather than each fitting the canvas.
+        let viewport = match self.group {
+            Some(_) => self.current_viewport(),
+            None => self.viewport,
+        };
         DisplayTarget {
             canvas: size(canvas_size.width.into(), canvas_size.height.into()),
-            zoom: self.viewport.map(|viewport| viewport.zoom),
+            zoom: viewport.map(|viewport| viewport.zoom),
             scale_factor: self.display_scale_factor.get(),
         }
     }
@@ -556,21 +935,21 @@ impl Viewer {
     /// Renders the frame again once zooming, resizing or a change of display settles, so it is
     /// neither magnified into blur nor rasterized far finer than it is shown.
     fn rerender_if_resolution_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(frame) = self.displayed_frame() else {
+        if self.load_task.is_some() || self.resolution_task.is_some() {
             return;
+        }
+        let target = self.display_target();
+        let is_off = match &self.group {
+            Some(group) => group.frames.iter().any(|relative_path| {
+                self.render_cache
+                    .peek(&Selection::Frame(relative_path.clone()))
+                    .is_some_and(|cached| resolution_is_off(&cached.frame, target))
+            }),
+            None => self
+                .displayed_frame()
+                .is_some_and(|frame| resolution_is_off(frame, target)),
         };
-        let Some(rendered_resolution) = frame.resolution else {
-            return;
-        };
-        let wanted_resolution = self
-            .display_target()
-            .resolution(size(frame.width, frame.height));
-        let is_sharp_enough = rendered_resolution >= wanted_resolution * 0.99;
-        let is_not_wasteful = rendered_resolution <= wanted_resolution * 2.;
-        if (is_sharp_enough && is_not_wasteful)
-            || self.load_task.is_some()
-            || self.resolution_task.is_some()
-        {
+        if !is_off {
             return;
         }
         self.resolution_task = Some(cx.spawn(async move |viewer, cx| {
@@ -584,12 +963,23 @@ impl Viewer {
         }));
     }
 
+    /// What pans and zooms as one: the frame, or the whole arrangement of a group.
+    fn content_size(&self) -> Option<Size<f32>> {
+        match &self.group {
+            Some(group) if group.frames.is_empty() => None,
+            Some(_) => Some(self.group_arrangement().1),
+            None => self
+                .displayed_frame()
+                .map(|frame| size(frame.width, frame.height)),
+        }
+    }
+
     fn current_viewport(&self) -> Option<Viewport> {
-        let frame = self.displayed_frame()?;
+        let content_size = self.content_size()?;
         let canvas_size = self.canvas_bounds.get().size;
         Some(self.viewport.unwrap_or_else(|| {
             Viewport::fitting(
-                size(frame.width, frame.height),
+                content_size,
                 size(canvas_size.width.into(), canvas_size.height.into()),
             )
         }))
@@ -628,10 +1018,42 @@ impl Viewer {
         self.svg_export_task = None;
     }
 
+    /// The frame the right panel describes: the one open, or the one selected in a group.
+    fn inspected_frame_path(&self) -> Option<&PathBuf> {
+        match (&self.selection, &self.group) {
+            (Some(Selection::Frame(relative_path)), _) => Some(relative_path),
+            (_, Some(group)) => group.selected_frame.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn inspected_frame(&self) -> Option<&RenderedFrame> {
+        match &self.group {
+            Some(_) => {
+                let key = Selection::Frame(self.inspected_frame_path()?.clone());
+                Some(self.render_cache.peek(&key)?.frame.as_ref())
+            }
+            None => self.displayed_frame(),
+        }
+    }
+
+    /// Where the inspected frame's top-left is on the canvas.
+    fn inspected_frame_offset(&self, viewport: Viewport) -> Option<Point<f32>> {
+        match &self.group {
+            Some(group) => {
+                let selected_frame = group.selected_frame.as_ref()?;
+                let boxes = self.group_frame_boxes(viewport);
+                let (_, frame_box) = boxes
+                    .into_iter()
+                    .find(|(relative_path, _)| relative_path == selected_frame)?;
+                Some(frame_box.origin)
+            }
+            None => Some(viewport.offset),
+        }
+    }
+
     fn selected_frame_file(&self) -> Option<FrameFile> {
-        let Some(Selection::Frame(relative_path)) = &self.selection else {
-            return None;
-        };
+        let relative_path = self.inspected_frame_path()?;
         self.frames
             .iter()
             .find(|file| file.relative_path.as_ref() == Some(relative_path))
@@ -722,7 +1144,8 @@ impl Viewer {
     /// Drawn over the image, so highlighting never re-renders the frame. The outline is clipped
     /// to the frame like the layers are, but the tag is not, so it survives at the frame's edge.
     fn render_layer_highlight(&self, viewport: Viewport) -> Option<impl IntoElement> {
-        let frame = self.displayed_frame()?;
+        let frame = self.inspected_frame()?;
+        let frame_offset = self.inspected_frame_offset(viewport)?;
         let layer_id = self
             .hovered_layer_id
             .clone()
@@ -730,8 +1153,8 @@ impl Viewer {
         let bounds = layer_bounds(&frame.report["layers"], &layer_id)?;
         let zoom = viewport.zoom;
         // A layer overhanging the frame keeps its tag on the part that can be seen.
-        let tag_left = viewport.offset.x + (bounds.origin.x * zoom).max(0.);
-        let tag_top = viewport.offset.y + (bounds.origin.y * zoom).max(0.) - LAYER_TAG_HEIGHT;
+        let tag_left = frame_offset.x + (bounds.origin.x * zoom).max(0.);
+        let tag_top = frame_offset.y + (bounds.origin.y * zoom).max(0.) - LAYER_TAG_HEIGHT;
         Some(
             div()
                 .absolute()
@@ -739,8 +1162,8 @@ impl Viewer {
                 .child(
                     div()
                         .absolute()
-                        .left(px(viewport.offset.x))
-                        .top(px(viewport.offset.y))
+                        .left(px(frame_offset.x))
+                        .top(px(frame_offset.y))
                         .w(px(frame.width * zoom))
                         .h(px(frame.height * zoom))
                         .overflow_hidden()
@@ -804,6 +1227,7 @@ impl Viewer {
                 h_flex()
                     .id("zoom-controls")
                     .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .p_1()
                     .gap_1()
                     .rounded(px(8.))
@@ -847,6 +1271,213 @@ impl Viewer {
                             .tooltip("Reset zoom")
                             .on_click(cx.listener(|viewer, _, _, cx| viewer.fit_frame(cx))),
                     ),
+            )
+    }
+
+    fn render_group_frames(&self, viewport: Viewport, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(group) = &self.group else {
+            return Vec::new();
+        };
+        let mut elements = Vec::new();
+        for (relative_path, frame_box) in self.group_frame_boxes(viewport) {
+            let is_selected = group.selected_frame.as_ref() == Some(&relative_path);
+            let (left, top) = (frame_box.origin.x, frame_box.origin.y);
+            let (width, height) = (frame_box.size.width, frame_box.size.height);
+            elements.push(
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top - FRAME_LABEL_OFFSET))
+                    .w(px(width))
+                    .truncate()
+                    .text_xs()
+                    .text_color(if is_selected {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .child(frame_name(&relative_path))
+                    .into_any_element(),
+            );
+            let slot = div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .h(px(height))
+                .overflow_hidden();
+            let cached = self
+                .render_cache
+                .peek(&Selection::Frame(relative_path.clone()));
+            let slot = if let Some(messages) = group.failures.get(&relative_path) {
+                slot.flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .p_2()
+                    .border_1()
+                    .border_color(cx.theme().danger)
+                    .bg(cx.theme().background)
+                    .child(icon(IconName::TriangleAlert, cx.theme().danger))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_center()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(messages.first().cloned().unwrap_or_default()),
+                    )
+            } else if let Some(cached) = cached {
+                slot.child(img(ImageSource::Render(cached.frame.image.clone())).size_full())
+            } else {
+                slot.flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(cx.theme().muted)
+                    .child(Spinner::new().color(cx.theme().muted_foreground))
+            };
+            elements.push(slot.into_any_element());
+            if is_selected {
+                // Drawn just outside the frame, so it hides none of it.
+                elements.push(
+                    div()
+                        .absolute()
+                        .left(px(left - 2.))
+                        .top(px(top - 2.))
+                        .w(px(width + 4.))
+                        .h(px(height + 4.))
+                        .border_2()
+                        .border_color(cx.theme().primary)
+                        .into_any_element(),
+                );
+            }
+        }
+        elements
+    }
+
+    fn render_layout_stepper(
+        &self,
+        id: &str,
+        label: &str,
+        value: String,
+        step: fn(&mut GroupLayout, usize, f32),
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .child(
+                div()
+                    .pl_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_owned()),
+            )
+            .child(
+                Button::new(SharedString::from(format!("{id}-decrease")))
+                    .ghost()
+                    .small()
+                    .icon(IconName::Minus)
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.change_group_layout(|layout, count| step(layout, count, -1.), cx);
+                    })),
+            )
+            .child(div().min_w(px(28.)).text_center().text_xs().child(value))
+            .child(
+                Button::new(SharedString::from(format!("{id}-increase")))
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .on_click(cx.listener(move |viewer, _, _, cx| {
+                        viewer.change_group_layout(|layout, count| step(layout, count, 1.), cx);
+                    })),
+            )
+    }
+
+    fn render_group_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (folder, frame_count) = self
+            .group
+            .as_ref()
+            .map(|group| (group.folder.clone(), group.frames.len()))
+            .unwrap_or_default();
+        let layout = self.group_layouts.get(&folder).copied().unwrap_or_default();
+        let border_color = cx.theme().border;
+        let separator = move || div().w(px(1.)).h_4().bg(border_color);
+        div()
+            .absolute()
+            .top_3()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                h_flex()
+                    .id("group-toolbar")
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .p_1()
+                    .gap_1()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .shadow_md()
+                    .child(
+                        ButtonGroup::new("arrangement")
+                            .ghost()
+                            .small()
+                            .child(
+                                Button::new("side-by-side")
+                                    .icon(IconName::Columns3)
+                                    .tooltip("Side by side")
+                                    .selected(layout.arrangement == Arrangement::Horizontal),
+                            )
+                            .child(
+                                Button::new("stacked")
+                                    .icon(IconName::Rows3)
+                                    .tooltip("Stacked")
+                                    .selected(layout.arrangement == Arrangement::Vertical),
+                            )
+                            .child(
+                                Button::new("grid")
+                                    .icon(IconName::LayoutGrid)
+                                    .tooltip("Grid")
+                                    .selected(layout.arrangement == Arrangement::Grid),
+                            )
+                            .on_click(cx.listener(|viewer, clicked: &Vec<usize>, _, cx| {
+                                let arrangement = match clicked.first() {
+                                    Some(0) => Arrangement::Horizontal,
+                                    Some(1) => Arrangement::Vertical,
+                                    Some(2) => Arrangement::Grid,
+                                    _ => return,
+                                };
+                                viewer.change_group_layout(
+                                    |layout, _| layout.arrangement = arrangement,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(separator())
+                    .child(self.render_layout_stepper(
+                        "spacing",
+                        "Spacing",
+                        format_number(layout.spacing.into()),
+                        |layout, _, direction| {
+                            layout.spacing = (layout.spacing + direction * SPACING_STEP).max(0.);
+                        },
+                        cx,
+                    ))
+                    .when(layout.arrangement == Arrangement::Grid, |toolbar| {
+                        toolbar.child(separator()).child(self.render_layout_stepper(
+                            "columns",
+                            "Columns",
+                            layout.columns_for(frame_count).to_string(),
+                            |layout, frame_count, direction| {
+                                let columns = layout.columns_for(frame_count) as f32 + direction;
+                                layout.columns = Some(columns.max(1.) as usize);
+                            },
+                            cx,
+                        ))
+                    }),
             )
     }
 
@@ -905,10 +1536,33 @@ impl Viewer {
                         )
                 },
             )
+            .when_some(
+                viewport.filter(|_| self.group.is_some()),
+                |canvas, viewport| canvas.children(self.render_group_frames(viewport, cx)),
+            )
             .children(viewport.and_then(|viewport| self.render_layer_highlight(viewport)))
             .when_some(viewport, |canvas, viewport| {
                 canvas.child(self.render_zoom_controls(viewport.zoom, cx))
             })
+            .when(self.group.is_some(), |canvas| {
+                canvas.child(self.render_group_toolbar(cx))
+            })
+            .when(
+                self.group
+                    .as_ref()
+                    .is_some_and(|group| group.frames.is_empty()),
+                |canvas| {
+                    canvas.child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(secondary_text)
+                            .child("No frames directly in this folder"),
+                    )
+                },
+            )
             .when(matches!(self.content, Content::Loading), |canvas| {
                 canvas.child(
                     div()
@@ -920,7 +1574,8 @@ impl Viewer {
                 )
             })
             .when(
-                self.load_task.is_some() && self.displayed_frame().is_some(),
+                self.load_task.is_some()
+                    && (self.displayed_frame().is_some() || self.group.is_some()),
                 |canvas| canvas.child(self.render_rendering_badge(cx)),
             )
             .when(matches!(self.content, Content::Nothing), |canvas| {
@@ -954,6 +1609,7 @@ impl Viewer {
                 MouseButton::Left,
                 cx.listener(|viewer, event: &MouseDownEvent, _, _| {
                     viewer.drag_position = Some(event.position);
+                    viewer.press_position = Some(event.position);
                 }),
             )
             .on_mouse_move(cx.listener(|viewer, event: &MouseMoveEvent, _, cx| {
@@ -964,7 +1620,17 @@ impl Viewer {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|viewer, _: &MouseUpEvent, _, _| viewer.drag_position = None),
+                cx.listener(|viewer, event: &MouseUpEvent, _, cx| {
+                    viewer.drag_position = None;
+                    let press_position = viewer.press_position.take();
+                    let is_click = press_position.is_some_and(|press_position| {
+                        let moved = event.position - press_position;
+                        f32::from(moved.x).hypot(f32::from(moved.y)) <= CLICK_SLOP
+                    });
+                    if is_click && viewer.group.is_some() {
+                        viewer.click_canvas(event.position, cx);
+                    }
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
@@ -986,7 +1652,7 @@ impl Viewer {
                 .into_any_element();
         }
         match &self.content {
-            Content::Nothing | Content::Loading | Content::Frame(_) => {
+            Content::Nothing | Content::Loading | Content::Frame(_) | Content::Group => {
                 self.render_canvas(cx).into_any_element()
             }
             Content::Tokens(sheet) => project_pages::render_tokens(sheet, cx).into_any_element(),
@@ -1038,14 +1704,13 @@ impl Viewer {
     }
 
     fn render_details_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = match (self.displayed_frame(), &self.selection) {
-            (Some(frame), _) => frame_title(frame),
-            (None, Some(Selection::Frame(relative_path))) => relative_path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            _ => String::new(),
+        let (title, kind) = match (self.inspected_frame(), self.inspected_frame_path()) {
+            (Some(frame), _) => (frame_title(frame), "Frame"),
+            (None, Some(relative_path)) => (frame_name(relative_path), "Frame"),
+            (None, None) => match &self.group {
+                Some(group) => (frame_name(&group.folder), "Group"),
+                None => (String::new(), "Frame"),
+            },
         };
         div()
             .flex_none()
@@ -1064,7 +1729,7 @@ impl Viewer {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Frame"),
+                    .child(kind),
             )
     }
 
@@ -1119,7 +1784,44 @@ impl Viewer {
 
     fn render_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut sections = Vec::new();
-        if let Some(frame) = self.displayed_frame() {
+        if let Some(group) = &self.group {
+            let failure = group
+                .selected_frame
+                .as_ref()
+                .and_then(|relative_path| group.failures.get(relative_path));
+            if let Some(messages) = failure {
+                sections.push(
+                    detail_section("Errors", cx)
+                        .children(messages.iter().map(|message| {
+                            div()
+                                .p_2()
+                                .rounded(cx.theme().radius)
+                                .bg(cx.theme().muted)
+                                .text_xs()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(message.clone())
+                        }))
+                        .into_any_element(),
+                );
+            } else if group.selected_frame.is_none() {
+                let frame_count = match group.frames.len() {
+                    1 => "1 frame".to_owned(),
+                    count => format!("{count} frames"),
+                };
+                sections.push(
+                    detail_section("Group", cx)
+                        .child(value_chip("Frames", None, frame_count, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Click a frame to see its details."),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        if let Some(frame) = self.inspected_frame() {
             let report = &frame.report;
             sections.push(
                 detail_section("Size", cx)
@@ -1226,6 +1928,8 @@ fn load(
         }),
         Selection::Tokens => Ok(Content::Tokens(token_sheet::load(project)?)),
         Selection::Config => Ok(Content::Config),
+        // Its frames render one by one through `render_next_in_group`.
+        Selection::Group(_) => Ok(Content::Group),
     }
 }
 
@@ -1311,6 +2015,24 @@ fn opaque_hex(color: &str) -> &str {
         .strip_suffix("FF")
         .filter(|hex| hex.len() == 7)
         .unwrap_or(color)
+}
+
+/// Whether a render is blurry or far finer than it is shown at `target`.
+fn resolution_is_off(frame: &RenderedFrame, target: DisplayTarget) -> bool {
+    let Some(rendered_resolution) = frame.resolution else {
+        return false;
+    };
+    let wanted_resolution = target.resolution(size(frame.width, frame.height));
+    rendered_resolution < wanted_resolution * 0.99 || rendered_resolution > wanted_resolution * 2.
+}
+
+/// The file or folder name, as the tree shows it.
+fn frame_name(relative_path: &Path) -> String {
+    relative_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn frame_title(frame: &RenderedFrame) -> String {

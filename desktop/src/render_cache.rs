@@ -34,6 +34,14 @@ impl RenderCache {
         self.entries.last().map(|(_, cached)| cached)
     }
 
+    /// Looks without counting as a use, for drawing what is already shown.
+    pub fn peek(&self, key: &Selection) -> Option<&CachedRender> {
+        self.entries
+            .iter()
+            .find(|(entry_key, _)| entry_key == key)
+            .map(|(_, cached)| cached)
+    }
+
     pub fn start_render(&mut self, key: &Selection) {
         self.in_flight = Some((key.clone(), false));
     }

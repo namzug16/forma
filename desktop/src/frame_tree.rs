@@ -14,11 +14,14 @@ const TOKENS_ID: &str = "tokens";
 const CONFIG_ID: &str = "config";
 const SEPARATOR_ID: &str = "separator";
 
-/// What the main area is showing. Folders only expand, so they are never selected.
+/// What the main area is showing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Selection {
     /// Path relative to the frames directory.
     Frame(PathBuf),
+    /// A subfolder of the frames directory, relative to it. The frames directory itself and asset
+    /// folders only expand.
+    Group(PathBuf),
     /// Path relative to the assets directory.
     Asset(PathBuf),
     Tokens,
@@ -33,6 +36,11 @@ impl Selection {
             _ => {
                 if let Some(relative_path) = item_id.strip_prefix(FRAME_PREFIX) {
                     Some(Self::Frame(relative_path.into()))
+                } else if let Some(relative_path) = item_id
+                    .strip_prefix(FOLDER_PREFIX)
+                    .and_then(|folder_id| folder_id.strip_prefix("frames/"))
+                {
+                    Some(Self::Group(relative_path.into()))
                 } else {
                     item_id
                         .strip_prefix(ASSET_PREFIX)
@@ -199,11 +207,23 @@ mod tests {
     }
 
     #[test]
-    fn folders_select_nothing() {
-        let items = build_items(&[frame("social/post.json")], &[], &HashSet::new());
+    fn frame_folders_select_their_group_but_the_frames_root_does_not() {
+        let items = build_items(&[frame("social/ads/post.json")], &[], &HashSet::new());
+
+        let social = &items[FRAMES_ROOT].children[0];
+        assert_eq!(
+            Selection::from_item_id(&social.children[0].id),
+            Some(Selection::Group("social/ads".into()))
+        );
+        assert_eq!(Selection::from_item_id(&items[FRAMES_ROOT].id), None);
+    }
+
+    #[test]
+    fn asset_folders_select_nothing() {
+        let items = build_items(&[], &[PathBuf::from("images/logo.png")], &HashSet::new());
 
         assert_eq!(
-            Selection::from_item_id(&items[FRAMES_ROOT].children[0].id),
+            Selection::from_item_id(&items[ASSETS_ROOT].children[0].id),
             None
         );
     }
