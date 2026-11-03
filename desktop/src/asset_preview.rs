@@ -1,6 +1,7 @@
 //! Finds the project's assets and draws them for the canvas. Everything is read through forma's
 //! `Assets`, so a viewer can't reach further than a frame can.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -98,6 +99,7 @@ pub fn load(project: &Project, relative_path: &Path) -> Result<AssetPreview> {
                 height: image.height() as f32,
                 report: named_report(&file_name),
                 resolution: None,
+                authored_layers: HashMap::new(),
             }))
         }
         AssetKind::Svg => {
@@ -164,6 +166,7 @@ fn draw(frame: &Value, project: &Project, file_name: &str) -> Result<AssetPrevie
         height: preview.height,
         report: named_report(file_name),
         resolution: None,
+        authored_layers: HashMap::new(),
     }))
 }
 

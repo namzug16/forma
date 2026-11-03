@@ -28,6 +28,7 @@ use serde_json::Value;
 use crate::asset_preview::{self, AssetKind, AssetPreview};
 use crate::frame_render::{self, DisplayTarget, RenderedFrame};
 use crate::frame_tree::{self, Selection};
+use crate::layer_details;
 use crate::project_pages;
 use crate::project_watch::{self, WatchedPaths};
 use crate::recent_projects;
@@ -1154,6 +1155,18 @@ impl Viewer {
                 );
             }
             sections.push(self.render_export_section(cx).into_any_element());
+            let highlighted_layer = self
+                .highlighted_layer_id
+                .as_deref()
+                .and_then(|layer_id| find_layer(&report["layers"], layer_id));
+            if let Some(layer) = highlighted_layer {
+                let authored = layer["id"]
+                    .as_str()
+                    .and_then(|layer_id| frame.authored_layers.get(layer_id))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                sections.extend(layer_details::render(layer, authored, cx));
+            }
             let mut layer_rows = Vec::new();
             self.push_layer_rows(&report["layers"], 0, &mut layer_rows, cx);
             sections.push(
@@ -1220,7 +1233,7 @@ pub fn icon(name: IconName, color: Hsla) -> Icon {
     Icon::new(name).size(px(ICON_SIZE)).text_color(color)
 }
 
-fn detail_section(title: &str, cx: &App) -> Div {
+pub fn detail_section(title: &str, cx: &App) -> Div {
     div()
         .flex_none()
         .px_4()
@@ -1238,7 +1251,7 @@ fn detail_section(title: &str, cx: &App) -> Div {
 }
 
 /// A read-only value drawn like Figma's fields.
-fn value_chip(label: &str, swatch: Option<Hsla>, value: String, cx: &App) -> impl IntoElement {
+pub fn value_chip(label: &str, swatch: Option<Hsla>, value: String, cx: &App) -> impl IntoElement {
     h_flex()
         .flex_1()
         .min_w_0()
@@ -1270,7 +1283,7 @@ fn value_chip(label: &str, swatch: Option<Hsla>, value: String, cx: &App) -> imp
 }
 
 /// Solid paints show their color; gradients are named, with their first stop as the swatch.
-fn describe_paint(paint: &Value) -> (Option<Hsla>, String) {
+pub fn describe_paint(paint: &Value) -> (Option<Hsla>, String) {
     let parse_color = |color: &Value| {
         let color = Rgba::try_from(color.as_str()?).ok()?;
         Some(Hsla::from(color))
@@ -1353,16 +1366,21 @@ fn layer_icon(kind: &str) -> IconName {
 /// The box around a layer in frame units. This is not `clippedBounds`, which is empty for a
 /// line with no height even though the line is drawn.
 fn layer_bounds(layers: &Value, layer_id: &str) -> Option<Bounds<f32>> {
+    let bounds = &find_layer(layers, layer_id)?["worldBounds"];
+    let number = |key: &str| bounds[key].as_f64().map(|value| value as f32);
+    Some(Bounds::new(
+        point(number("x")?, number("y")?),
+        size(number("width")?, number("height")?),
+    ))
+}
+
+fn find_layer<'a>(layers: &'a Value, layer_id: &str) -> Option<&'a Value> {
     layers.as_array()?.iter().find_map(|layer| {
-        if layer["id"] != layer_id {
-            return layer_bounds(&layer["children"], layer_id);
+        if layer["id"] == layer_id {
+            Some(layer)
+        } else {
+            find_layer(&layer["children"], layer_id)
         }
-        let bounds = &layer["worldBounds"];
-        let number = |key: &str| bounds[key].as_f64().map(|value| value as f32);
-        Some(Bounds::new(
-            point(number("x")?, number("y")?),
-            size(number("width")?, number("height")?),
-        ))
     })
 }
 

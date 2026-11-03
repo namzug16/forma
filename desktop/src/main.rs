@@ -3,6 +3,7 @@
 mod asset_preview;
 mod frame_render;
 mod frame_tree;
+mod layer_details;
 mod project_pages;
 mod project_watch;
 mod recent_projects;

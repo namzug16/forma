@@ -1,5 +1,7 @@
 //! Renders a frame in memory for display; nothing here writes to disk.
 
+use std::collections::HashMap;
+use std::fs;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -16,6 +18,7 @@ use serde_json::Value;
 use smallvec::smallvec;
 use tiny_skia::Pixmap;
 
+use crate::layer_details::{self, AuthoredProperty};
 use crate::viewport::Viewport;
 
 /// About what a fixed 2× render of a tall phone screenshot used to be, so zooming in never costs
@@ -33,6 +36,8 @@ pub struct RenderedFrame {
     pub report: Value,
     /// Device pixels per design unit it was rendered for, or `None` if the zoom doesn't matter.
     pub resolution: Option<f32>,
+    /// By layer id, as written in the frame file; empty for assets.
+    pub authored_layers: HashMap<String, Vec<AuthoredProperty>>,
 }
 
 /// Where a frame is shown, so it is rasterized at that size rather than a fixed one.
@@ -70,12 +75,19 @@ pub fn render_frame(
     let resolution = target.resolution(frame_size);
     let (width, height) = raster_size(frame_size, resolution);
     let canvas = renderer::render_to_size(&scene, width, height).map_err(Failure::from)?;
+    // The scene parsed it moments ago, so a failure here only loses the authored details.
+    let authored_frame = fs::read_to_string(&file.path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let tokens = resources.tokens.resolved().unwrap_or_default();
     Ok(RenderedFrame {
         image: to_render_image(&canvas),
         width: frame_size.width,
         height: frame_size.height,
         report: inspect::report(&scene, None)?,
         resolution: Some(resolution),
+        authored_layers: layer_details::authored_properties(&authored_frame, &tokens),
     })
 }
 

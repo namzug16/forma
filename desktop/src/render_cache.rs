@@ -102,6 +102,7 @@ mod tests {
             height: 1.,
             report: Value::Null,
             resolution: None,
+            authored_layers: Default::default(),
         })
     }
 
