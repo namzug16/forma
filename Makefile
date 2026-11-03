@@ -14,7 +14,8 @@ desktop:
 desktop-app:
 	cargo build --release -p forma-desktop
 	rm -rf target/Forma.app
-	mkdir -p target/Forma.app/Contents/MacOS
+	mkdir -p target/Forma.app/Contents/MacOS target/Forma.app/Contents/Resources
+	cp desktop/assets/Forma.icns target/Forma.app/Contents/Resources/
 	cp desktop/Info.plist target/Forma.app/Contents/
 	plutil -replace CFBundleShortVersionString -string $(VERSION) target/Forma.app/Contents/Info.plist
 	cp target/release/forma-desktop target/Forma.app/Contents/MacOS/

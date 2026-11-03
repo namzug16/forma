@@ -4,6 +4,8 @@
 <dict>
   <key>CFBundleExecutable</key>
   <string>forma-desktop</string>
+  <key>CFBundleIconFile</key>
+  <string>Forma</string>
   <key>CFBundleIdentifier</key>
   <string>dev.namzug.forma.desktop</string>
   <key>CFBundleName</key>
