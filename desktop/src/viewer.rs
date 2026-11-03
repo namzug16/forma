@@ -105,8 +105,11 @@ pub struct Viewer {
     svg_export: SvgExport,
     /// Dropping it abandons an export, so a late one can't overwrite the clipboard.
     svg_export_task: Option<Task<()>>,
-    /// Set while loading. Dropping it cancels a load that a newer change has replaced.
+    /// Set while loading. Only one load runs at a time: a render can't be stopped once started,
+    /// so overlapping ones would only compete for the CPU.
     load_task: Option<Task<()>>,
+    /// Something changed during the running load, so another follows it.
+    is_reload_pending: bool,
     /// Waits for zooming or resizing to settle. Dropping it restarts the wait.
     resolution_task: Option<Task<()>>,
     image_cache: ImageCache,
@@ -153,6 +156,7 @@ impl Viewer {
             svg_export: SvgExport::Idle,
             svg_export_task: None,
             load_task: None,
+            is_reload_pending: false,
             resolution_task: None,
             image_cache: ImageCache::default(),
             _subscriptions: subscriptions,
@@ -176,9 +180,14 @@ impl Viewer {
 
     /// Reloads what is selected, leaving the current content up until the result arrives.
     fn load_selection(&mut self, cx: &mut Context<Self>) {
+        if self.load_task.is_some() {
+            self.is_reload_pending = true;
+            return;
+        }
         let Some(selection) = self.selection.clone() else {
             return;
         };
+        let loaded_selection = selection.clone();
         let project = self.project.clone();
         let frames = self.frames.clone();
         let image_cache = self.image_cache.clone();
@@ -193,7 +202,13 @@ impl Viewer {
             viewer
                 .update(cx, |viewer, cx| {
                     viewer.load_task = None;
-                    viewer.show(content, cx);
+                    // A stale render of the same selection still beats what is on screen.
+                    if viewer.selection.as_ref() == Some(&loaded_selection) {
+                        viewer.show(content, cx);
+                    }
+                    if std::mem::take(&mut viewer.is_reload_pending) {
+                        viewer.load_selection(cx);
+                    }
                 })
                 .ok();
         }));
@@ -346,7 +361,6 @@ impl Viewer {
             self.hovered_layer_id = None;
             self.reset_svg_export();
             self.viewport = None;
-            self.load_task = None;
             self.show(Content::Nothing, cx);
         }
     }
