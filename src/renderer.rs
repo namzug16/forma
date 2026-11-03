@@ -4,15 +4,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use tiny_skia::{
-    Color as SkiaColor, ColorU8, FillRule, FilterQuality, GradientStop, IntSize,
-    LineCap as SkiaLineCap, LineJoin as SkiaLineJoin, LinearGradient, Mask, MaskType,
-    Paint as SkiaPaint, PathBuilder, Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect,
-    Shader, SpreadMode, Stroke as SkiaStroke, StrokeDash, Transform,
+    Color as SkiaColor, ColorU8, FillRule, FilterQuality, GradientStop, LineCap as SkiaLineCap,
+    LineJoin as SkiaLineJoin, LinearGradient, Mask, MaskType, Paint as SkiaPaint, PathBuilder,
+    Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode,
+    Stroke as SkiaStroke, StrokeDash, Transform,
 };
 
 use usvg::Tree;
 
-use crate::assets::{DecodedImage, write_atomically};
+use crate::assets::write_atomically;
 use crate::diagnostics::Diagnostic;
 use crate::document::{ImageFit, LineCap, LineJoin};
 use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
@@ -360,17 +360,8 @@ fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
     }
 }
 
-fn draw_image(
-    canvas: &mut Pixmap,
-    image: &DecodedImage,
-    fit: ImageFit,
-    bounds: Bounds,
-    world: Affine,
-) {
-    let Some(pixels) = premultiplied_pixmap(image) else {
-        return;
-    };
-    let (image_width, image_height) = (f64::from(image.width), f64::from(image.height));
+fn draw_image(canvas: &mut Pixmap, pixels: &Pixmap, fit: ImageFit, bounds: Bounds, world: Affine) {
+    let (image_width, image_height) = (f64::from(pixels.width()), f64::from(pixels.height()));
     let (scale_x, scale_y) = (bounds.width / image_width, bounds.height / image_height);
     let (scale_x, scale_y) = match fit {
         ImageFit::Fill => (scale_x, scale_y),
@@ -437,19 +428,6 @@ pub fn svg_to_box(tree: &Tree, bounds: Bounds) -> Affine {
         bounds.x + (bounds.width - svg_width * scale) / 2.0,
         bounds.y + (bounds.height - svg_height * scale) / 2.0,
     ))
-}
-
-pub fn premultiplied_pixmap(image: &DecodedImage) -> Option<Pixmap> {
-    let premultiply =
-        |channel: u8, alpha: u8| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8;
-    let mut premultiplied = image.rgba.clone();
-    for pixel in premultiplied.as_chunks_mut::<4>().0 {
-        let alpha = pixel[3];
-        pixel[0] = premultiply(pixel[0], alpha);
-        pixel[1] = premultiply(pixel[1], alpha);
-        pixel[2] = premultiply(pixel[2], alpha);
-    }
-    Pixmap::from_vec(premultiplied, IntSize::from_wh(image.width, image.height)?)
 }
 
 fn skia_rect(bounds: Bounds) -> Option<Rect> {

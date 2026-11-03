@@ -14,7 +14,7 @@ use forma::text::FontLibrary;
 use forma::tokens::Tokens;
 use serde_json::{Value, json};
 
-use crate::frame_render::{RenderedFrame, bgra_render_image};
+use crate::frame_render::{RenderedFrame, to_render_image};
 use crate::token_sheet::render_preview;
 
 const FONT_SPECIMEN: &str = "Aa Bb Cc Dd Ee\nDesign as code\n0123456789";
@@ -92,14 +92,10 @@ pub fn load(project: &Project, relative_path: &Path) -> Result<AssetPreview> {
     match kind_of(relative_path) {
         AssetKind::Image => {
             let (_, image) = assets.load_image(&source, &source).map_err(Failure::from)?;
-            let mut bgra = image.rgba;
-            for pixel in bgra.as_chunks_mut::<4>().0 {
-                pixel.swap(0, 2);
-            }
             Ok(AssetPreview::Drawn(RenderedFrame {
-                image: bgra_render_image(image.width, image.height, bgra),
-                width: image.width as f32,
-                height: image.height as f32,
+                image: to_render_image(&image),
+                width: image.width() as f32,
+                height: image.height() as f32,
                 report: named_report(&file_name),
             }))
         }

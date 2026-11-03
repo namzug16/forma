@@ -5,6 +5,7 @@ use std::io::{Cursor, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use image::{ImageReader, Limits};
+use tiny_skia::{IntSize, Pixmap};
 use usvg::roxmltree::{Document, ParsingOptions};
 use usvg::{ImageHrefResolver, Options, Tree};
 
@@ -59,14 +60,6 @@ pub fn is_safe_slug(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
-/// Decoded pixels in straight (not premultiplied) RGBA.
-#[derive(Debug)]
-pub struct DecodedImage {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
 }
 
 #[derive(Debug)]
@@ -178,7 +171,7 @@ impl Assets {
         &self,
         relative_path: &str,
         path: &str,
-    ) -> Result<(PathBuf, DecodedImage), Diagnostic> {
+    ) -> Result<(PathBuf, Pixmap), Diagnostic> {
         let (resolved, bytes) = self.read(relative_path, path)?;
         let image = decode_image(&bytes, &resolved)
             .map_err(|message| Diagnostic::new("invalid_image", message).at(path))?;
@@ -236,7 +229,8 @@ fn parse_svg(bytes: &[u8], current_color: Option<Color>) -> Result<Tree, (&'stat
     Tree::from_data(bytes, &options).map_err(|error| invalid(&error))
 }
 
-fn decode_image(bytes: &[u8], source: &Path) -> Result<DecodedImage, String> {
+/// Premultiplied once here, as the renderer needs, rather than on every draw.
+fn decode_image(bytes: &[u8], source: &Path) -> Result<Pixmap, String> {
     let describe = |error: &dyn std::fmt::Display| format!("{}: {error}", source.display());
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -250,11 +244,18 @@ fn decode_image(bytes: &[u8], source: &Path) -> Result<DecodedImage, String> {
         .map_err(|error| describe(&error))?
         .into_rgba8();
     let (width, height) = decoded.dimensions();
-    Ok(DecodedImage {
-        rgba: decoded.into_raw(),
-        width,
-        height,
-    })
+    let premultiply =
+        |channel: u8, alpha: u8| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8;
+    let mut premultiplied = decoded.into_raw();
+    for pixel in premultiplied.as_chunks_mut::<4>().0 {
+        let alpha = pixel[3];
+        pixel[0] = premultiply(pixel[0], alpha);
+        pixel[1] = premultiply(pixel[1], alpha);
+        pixel[2] = premultiply(pixel[2], alpha);
+    }
+    IntSize::from_wh(width, height)
+        .and_then(|size| Pixmap::from_vec(premultiplied, size))
+        .ok_or_else(|| describe(&"the image has no pixels"))
 }
 
 #[cfg(test)]

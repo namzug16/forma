@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use usvg::Tree;
 
-use crate::assets::{Assets, DecodedImage};
+use crate::assets::Assets;
 use crate::diagnostics::{Diagnostic, Failure};
 use crate::document::{
     self, CommonProperties, Frame, ImageFit, LineCap, LineJoin, Node, NodeKind, NumberValue,
@@ -184,7 +184,7 @@ pub enum SceneKind {
         line_count: usize,
     },
     Image {
-        image: DecodedImage,
+        image: tiny_skia::Pixmap,
         source: PathBuf,
         fit: ImageFit,
     },

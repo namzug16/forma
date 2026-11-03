@@ -9,7 +9,7 @@ use tiny_skia::PathSegment;
 use usvg::{Tree, WriteOptions};
 
 use crate::document::{ImageFit, LineCap, LineJoin};
-use crate::renderer::{linear_gradient_line, premultiplied_pixmap, svg_to_box};
+use crate::renderer::{linear_gradient_line, svg_to_box};
 use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
 use crate::tokens::{Color, ColorStop, Paint};
 
@@ -124,8 +124,7 @@ impl SvgWriter {
                 }
             }
             SceneKind::Image { image, fit, .. } => {
-                let Some(png) = premultiplied_pixmap(image).and_then(|p| p.encode_png().ok())
-                else {
+                let Ok(png) = image.encode_png() else {
                     return;
                 };
                 let aspect_ratio = match fit {
