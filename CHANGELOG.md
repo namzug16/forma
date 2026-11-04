@@ -12,6 +12,10 @@ Each release's section is published as its GitHub release notes.
   the parent group or the frame, and every layer takes `minWidth`, `maxWidth`, `minHeight` and
   `maxHeight`. Text that hugs wraps at its `maxWidth`. A group may hug one axis and set the other,
   and can clip without an explicit size. `forma inspect` reports how each size was authored.
+- Groups take `layout` to place their children in a row or column with `gap`, `padding`, `align`
+  and `crossAlign`, so a card hugs its copy and agents no longer recompute positions when text
+  changes. `"position": "absolute"` takes a child out of the flow, and children that overflow a
+  fixed-size layout are reported as a warning.
 
 ## 0.2.0 - 2026-11-03
 

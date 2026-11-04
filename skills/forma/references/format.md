@@ -77,6 +77,21 @@ or taking a percentage of a parent that hugs on that axis is an error, because t
 on each other. `minWidth`, `maxWidth`, `minHeight` and `maxHeight` apply to every layer after its
 size is resolved.
 
+**Layout.** A group with `layout` places its children in a row or column instead of at their `x`
+and `y`: `{ "direction": "column", "gap": 12, "padding": 24, "align": "center", "crossAlign":
+"stretch" }`. `direction` is `row` (default) or `column`. `padding` is one number,
+`[vertical, horizontal]` or `[top, right, bottom, left]`. `align` places children along the
+direction (`start`, `center`, `end`, `space-between`) and `crossAlign` across it (`start`, `center`,
+`end`, `stretch`). A layout group that hugs is as big as its children plus gaps and padding, so a
+card fits its copy without any arithmetic. Inside it, `"fill"` along the direction shares the space
+left equally among siblings, and `"fill"` across it stretches, to the largest sibling if the group
+hugs. Percentages measure against the box inside the padding. Children keep their size and overflow
+rather than shrink, with a `layout_overflow` warning. `x`, `y` and `anchor` are errors on children
+in the flow. `"position": "absolute"` takes a child out of it: it is placed with `x` and `y` from
+the group's top-left, measures `fill` against the whole group, and does not count toward a hugging
+group's size. Hidden children leave no gap. Rotation and scale apply after layout and don't move
+siblings.
+
 **Groups** that hug take their bounds from their children, per axis. A group hugging both axes keeps
 its own origin at `(x, y)` unless an `anchor` is set, which then refers to those bounds. `"clip":
 true` clips to the group's box. Group opacity applies after the children are composited. `mask` is a

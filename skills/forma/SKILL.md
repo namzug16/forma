@@ -92,6 +92,21 @@ the rest of the repo stays exactly as it was.
 2. Create or edit `forma/frames/NAME.json`. Its `id` should match the file name.
 3. Use tokens for every color, font, gradient and spacing value the system defines. A hard-coded
    value passes validation, but it stops following the system when a token changes.
+   Build anything whose size depends on its content, such as cards, buttons, lists and captions,
+   from groups with `layout` instead of computing `x` and `y` yourself; then copy can change without
+   touching positions:
+
+   ```json
+   { "id": "card", "type": "group", "maxWidth": 480, "fill": "$colors.surface", "cornerRadius": 24,
+     "layout": { "direction": "column", "gap": 12, "padding": 32 },
+     "children": [
+       { "id": "title", "type": "text", "text": "…", "width": "fill", "font": "$typography.heading",
+         "fill": "$colors.foreground" },
+       { "id": "body", "type": "text", "text": "…", "width": "fill", "font": "$typography.body",
+         "fill": "$colors.muted" } ] }
+   ```
+
+   Keep `x` and `y` for the outermost placement and for deliberate overlaps.
 4. Run `forma validate NAME`, then `forma render NAME --json`. Errors include a `code`, a JSON `path`
    and the `layer`, which point at the exact fix. Treat warnings as problems too: a fallback font or
    substituted weight means the design isn't using the brand's type.

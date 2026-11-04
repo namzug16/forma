@@ -8,6 +8,7 @@ pub mod fontsource;
 pub mod frames;
 pub mod icons;
 pub mod inspect;
+pub mod layout;
 pub mod net;
 pub mod project;
 pub mod renderer;

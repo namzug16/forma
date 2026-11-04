@@ -12,7 +12,7 @@ use crate::diagnostics::{Diagnostic, Failure};
 pub const SUPPORTED_DOCUMENT_VERSION: u32 = 1;
 const MAX_NESTING_DEPTH: usize = 64;
 
-const COMMON_PROPERTIES: [&str; 14] = [
+const COMMON_PROPERTIES: [&str; 15] = [
     "id",
     "x",
     "y",
@@ -27,6 +27,7 @@ const COMMON_PROPERTIES: [&str; 14] = [
     "maxWidth",
     "minHeight",
     "maxHeight",
+    "position",
 ];
 const ROOT_TRANSFORM_PROPERTIES: [&str; 7] =
     ["x", "y", "anchor", "pivot", "rotation", "scaleX", "scaleY"];
@@ -241,6 +242,68 @@ pub struct CommonProperties {
     pub max_width: Option<NumberValue>,
     pub min_height: Option<NumberValue>,
     pub max_height: Option<NumberValue>,
+    /// `absolute` takes a child of a layout group out of the flow, back to `x` and `y`.
+    pub position: Option<Position>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Position {
+    Absolute,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    #[default]
+    Row,
+    Column,
+}
+
+/// Where children sit along the layout direction.
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum MainAlign {
+    #[default]
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
+/// Where children sit across the layout direction.
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CrossAlign {
+    #[default]
+    Start,
+    Center,
+    End,
+    Stretch,
+}
+
+/// One number for every side, `[vertical, horizontal]`, or `[top, right, bottom, left]`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(
+    untagged,
+    expecting = "a number, [vertical, horizontal] or [top, right, bottom, left]"
+)]
+pub enum Padding {
+    All(NumberValue),
+    Axes([NumberValue; 2]),
+    Sides([NumberValue; 4]),
+}
+
+/// Places the group's children in a row or column instead of at their `x` and `y`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Layout {
+    pub direction: Option<Direction>,
+    /// Space between neighboring children.
+    pub gap: Option<NumberValue>,
+    pub padding: Option<Padding>,
+    pub align: Option<MainAlign>,
+    pub cross_align: Option<CrossAlign>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -311,6 +374,7 @@ pub struct GroupProperties {
     pub height: Option<SizeValue>,
     /// Clip children to the group's box, following `cornerRadius`.
     pub clip: Option<bool>,
+    pub layout: Option<Layout>,
     /// The background box is painted behind the children.
     pub corner_radius: Option<NumberValue>,
     pub fill: Option<Fill>,
