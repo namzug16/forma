@@ -2,7 +2,7 @@
 
 Each release's section is published as its GitHub release notes.
 
-## Unreleased
+## 0.3.0 - 2026-11-04
 
 ### Frames
 
@@ -16,6 +16,16 @@ Each release's section is published as its GitHub release notes.
   and `crossAlign`, so a card hugs its copy and agents no longer recompute positions when text
   changes. `"position": "absolute"` takes a child out of the flow, and children that overflow a
   fixed-size layout are reported as a warning.
+
+### Desktop
+
+- Clicking a subfolder of the frames directory shows its frames together, side by side, stacked or
+  in a grid, with adjustable spacing and columns.
+- Clicking a layer opens its details in a pane below the layers list: what forma resolved it to,
+  and every property as written in the frame file, with token references resolved beside them.
+- Going back to a recently shown frame shows its last render at once while any change re-renders.
+- Edits show sooner: frames render at the size they are shown, decoded images are reused across
+  renders, and a burst of file changes runs one render at a time instead of several in parallel.
 
 ## 0.2.0 - 2026-11-03
 
