@@ -234,12 +234,16 @@ pub struct SvgProperties {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupProperties {
     pub width: Option<NumberValue>,
     pub height: Option<NumberValue>,
-    /// Clip children to the explicit width and height.
+    /// Clip children to the explicit width and height, following `cornerRadius`.
     pub clip: Option<bool>,
+    /// The background box is painted behind the children.
+    pub corner_radius: Option<NumberValue>,
+    pub fill: Option<Fill>,
+    pub stroke: Option<Stroke>,
 }
 
 #[derive(Debug, JsonSchema)]

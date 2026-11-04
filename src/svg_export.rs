@@ -10,7 +10,7 @@ use usvg::{Tree, WriteOptions};
 
 use crate::document::{ImageFit, LineCap, LineJoin};
 use crate::renderer::{linear_gradient_line, svg_to_box};
-use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
+use crate::scene::{Affine, Bounds, BoxPaint, Scene, SceneKind, SceneNode, Stroke};
 use crate::tokens::{Color, ColorStop, Paint};
 
 /// The markup is self-contained: images are embedded and text is outlined, so it needs neither
@@ -70,29 +70,9 @@ impl SvgWriter {
         let transform = transform_attribute(node.transform);
         let common = format!(r#"id="{id}"{transform}{opacity}"#);
         match &node.kind {
-            SceneKind::Rect {
-                corner_radius,
-                fill,
-                stroke,
-            } => {
-                let paint = self.paint_attributes(fill.as_ref(), stroke.as_ref(), bounds);
-                let radius = if *corner_radius > 0.0 {
-                    format!(r#" rx="{corner_radius}""#)
-                } else {
-                    String::new()
-                };
-                let Bounds {
-                    x,
-                    y,
-                    width,
-                    height,
-                } = bounds;
-                push(
-                    output,
-                    format!(
-                        r#"<rect {common} x="{x}" y="{y}" width="{width}" height="{height}"{radius} {paint}/>"#
-                    ),
-                );
+            SceneKind::Rect(paint) => {
+                let element = self.box_element(&common, paint, bounds);
+                push(output, element);
             }
             SceneKind::Ellipse { fill, stroke } => {
                 let paint = self.paint_attributes(fill.as_ref(), stroke.as_ref(), bounds);
@@ -156,6 +136,7 @@ impl SvgWriter {
             }
             SceneKind::Group {
                 children,
+                background,
                 clip,
                 mask,
             } => {
@@ -168,9 +149,10 @@ impl SvgWriter {
                         width,
                         height,
                     } = bounds;
+                    let radius = radius_attribute(background.corner_radius);
                     let _ = write!(
                         self.definitions,
-                        r#"<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{width}" height="{height}"/></clipPath>"#
+                        r#"<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{width}" height="{height}"{radius}/></clipPath>"#
                     );
                     let _ = write!(group, r#" clip-path="url(#{clip_id})""#);
                 }
@@ -190,10 +172,28 @@ impl SvgWriter {
                     let _ = write!(group, r#" mask="url(#{mask_id})""#);
                 }
                 push(output, format!("<g {group}>"));
+                if background.fill.is_some() || background.stroke.is_some() {
+                    let element = self.box_element("", background, bounds);
+                    push(output, element);
+                }
                 self.write_nodes(children, output);
                 output.push_str("</g>");
             }
         }
+    }
+
+    fn box_element(&mut self, common: &str, paint: &BoxPaint, bounds: Bounds) -> String {
+        let attributes = self.paint_attributes(paint.fill.as_ref(), paint.stroke.as_ref(), bounds);
+        let radius = radius_attribute(paint.corner_radius);
+        let Bounds {
+            x,
+            y,
+            width,
+            height,
+        } = bounds;
+        format!(
+            r#"<rect {common} x="{x}" y="{y}" width="{width}" height="{height}"{radius} {attributes}/>"#
+        )
     }
 
     /// The inside of the embedded document, with ids that can't collide with another embed.
@@ -274,6 +274,14 @@ fn mask_region(mask: &SceneNode) -> Bounds {
         y: bounds.y - margin,
         width: bounds.width + margin * 2.0,
         height: bounds.height + margin * 2.0,
+    }
+}
+
+fn radius_attribute(corner_radius: f64) -> String {
+    if corner_radius > 0.0 {
+        format!(r#" rx="{corner_radius}""#)
+    } else {
+        String::new()
     }
 }
 
@@ -442,7 +450,9 @@ mod tests {
                 { "id": "hidden", "type": "rect", "width": 400, "height": 300, "visible": false,
                   "fill": { "color": "#FF0000" } },
                 { "id": "clipped", "type": "group", "x": 20, "y": 190, "width": 120, "height": 80,
-                  "clip": true, "opacity": 0.9, "children": [
+                  "clip": true, "opacity": 0.9, "cornerRadius": 16,
+                  "fill": { "color": "#FFFFFF" }, "stroke": { "color": "#1E1E1E", "width": 4 },
+                  "children": [
                       { "id": "overhang", "type": "rect", "x": -40, "y": -40, "width": 120,
                         "height": 90, "fill": { "color": "#0D99FF" } } ] },
                 { "id": "masked", "type": "group", "x": 170, "y": 190,

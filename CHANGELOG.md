@@ -2,6 +2,13 @@
 
 Each release's section is published as its GitHub release notes.
 
+## Unreleased
+
+### Frames
+
+- Groups take `fill`, `stroke` and `cornerRadius` to paint a background behind their children, so a
+  card is one group. Clipping follows the rounded corners.
+
 ## 0.2.0 - 2026-11-03
 
 ### CLI

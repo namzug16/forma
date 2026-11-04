@@ -3,7 +3,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::diagnostics::{Diagnostic, Failure};
-use crate::scene::{Affine, Bounds, NodeLayout, Scene, SceneKind, SceneNode};
+use crate::scene::{Affine, Bounds, BoxPaint, NodeLayout, Scene, SceneKind, SceneNode};
 
 /// The report for a whole frame, or for one layer when `layer_id` is given.
 pub fn report(scene: &Scene, layer_id: Option<&str>) -> Result<Value, Failure> {
@@ -96,15 +96,9 @@ fn describe_node(
     *draw_order += 1;
     let details = layer.as_object_mut().expect("layer is a JSON object");
     match &node.kind {
-        SceneKind::Rect {
-            corner_radius,
-            fill,
-            stroke,
-        } => {
+        SceneKind::Rect(paint) => {
             insert(details, "type", json!("rect"));
-            insert(details, "cornerRadius", json!(corner_radius));
-            insert(details, "fill", json!(fill));
-            insert(details, "stroke", json!(stroke));
+            insert_box_paint(details, paint);
         }
         SceneKind::Ellipse { fill, stroke } => {
             insert(details, "type", json!("ellipse"));
@@ -149,10 +143,12 @@ fn describe_node(
         }
         SceneKind::Group {
             children,
+            background,
             clip,
             mask,
         } => {
             insert(details, "type", json!("group"));
+            insert_box_paint(details, background);
             insert(details, "clip", json!(clip));
             insert(details, "mask", json!(mask.as_ref().map(|mask| &mask.id)));
             let children = describe_nodes(
@@ -170,6 +166,12 @@ fn describe_node(
 
 fn insert(details: &mut Map<String, Value>, key: &str, value: Value) {
     details.insert(key.to_owned(), value);
+}
+
+fn insert_box_paint(details: &mut Map<String, Value>, paint: &BoxPaint) {
+    insert(details, "cornerRadius", json!(paint.corner_radius));
+    insert(details, "fill", json!(paint.fill));
+    insert(details, "stroke", json!(paint.stroke));
 }
 
 /// Indented outline for people; `--json` is the full report.

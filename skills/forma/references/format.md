@@ -74,7 +74,8 @@ separate pivot the anchored point can move. Rotation is clockwise degrees.
 `(x, y)` unless an `anchor` is set, which then refers to those bounds. `"clip": true` needs an
 explicit `width` and `height`. Group opacity applies after the children are composited. `mask` is a
 node in the group's coordinates; its alpha is multiplied into the composited group, so shapes fade
-or cut out the group's contents. Only groups accept a mask.
+or cut out the group's contents. Only groups accept a mask. `fill`, `stroke` and `cornerRadius`
+paint a background box behind the children, like a rect, and a clip follows the rounded corners.
 
 **Linear gradients.** Angle `0` points up and `90` points right. Stops `0` and `1` reach the corners
 of the box at any angle, as in CSS. Interpolation is in sRGB, on straight alpha.

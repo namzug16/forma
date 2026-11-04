@@ -163,13 +163,17 @@ pub struct Stroke {
     pub dash: Vec<f64>,
 }
 
+/// A possibly rounded box's fill and stroke, drawn by rects and behind a group's children.
+#[derive(Debug)]
+pub struct BoxPaint {
+    pub corner_radius: f64,
+    pub fill: Option<Paint>,
+    pub stroke: Option<Stroke>,
+}
+
 #[derive(Debug)]
 pub enum SceneKind {
-    Rect {
-        corner_radius: f64,
-        fill: Option<Paint>,
-        stroke: Option<Stroke>,
-    },
+    Rect(BoxPaint),
     Ellipse {
         fill: Option<Paint>,
         stroke: Option<Stroke>,
@@ -196,6 +200,7 @@ pub enum SceneKind {
     },
     Group {
         children: Vec<SceneNode>,
+        background: BoxPaint,
         clip: bool,
         mask: Option<Box<SceneNode>>,
     },
@@ -434,6 +439,27 @@ impl SceneBuilder<'_> {
         })
     }
 
+    fn box_paint(
+        &mut self,
+        corner_radius: Option<&NumberValue>,
+        fill: Option<&document::Fill>,
+        stroke: Option<&document::Stroke>,
+        path: &str,
+        layer: &str,
+    ) -> Option<BoxPaint> {
+        let corner_radius = match corner_radius {
+            Some(radius) => self.dimension(radius, &format!("{path}.cornerRadius"), layer),
+            None => Some(0.0),
+        };
+        let fill = self.paint(fill, &format!("{path}.fill"), layer);
+        let stroke = self.optional_stroke(stroke, &format!("{path}.stroke"), layer);
+        Some(BoxPaint {
+            corner_radius: corner_radius?,
+            fill: fill?,
+            stroke: stroke?,
+        })
+    }
+
     fn optional_stroke(
         &mut self,
         stroke: Option<&document::Stroke>,
@@ -452,19 +478,18 @@ impl SceneBuilder<'_> {
             NodeKind::Rect(rect) => {
                 let width = self.dimension(&rect.width, &format!("{path}.width"), layer);
                 let height = self.dimension(&rect.height, &format!("{path}.height"), layer);
-                let corner_radius = match &rect.corner_radius {
-                    Some(radius) => self.dimension(radius, &format!("{path}.cornerRadius"), layer),
-                    None => Some(0.0),
-                };
-                let fill = self.paint(rect.fill.as_ref(), &format!("{path}.fill"), layer);
-                let stroke =
-                    self.optional_stroke(rect.stroke.as_ref(), &format!("{path}.stroke"), layer);
-                let kind = SceneKind::Rect {
-                    corner_radius: corner_radius?,
-                    fill: fill?,
-                    stroke: stroke?,
-                };
-                (kind, Bounds::sized(width?, height?), true)
+                let paint = self.box_paint(
+                    rect.corner_radius.as_ref(),
+                    rect.fill.as_ref(),
+                    rect.stroke.as_ref(),
+                    path,
+                    layer,
+                );
+                (
+                    SceneKind::Rect(paint?),
+                    Bounds::sized(width?, height?),
+                    true,
+                )
             }
             NodeKind::Ellipse(ellipse) => {
                 let width = self.dimension(&ellipse.width, &format!("{path}.width"), layer);
@@ -513,6 +538,13 @@ impl SceneBuilder<'_> {
                         return None;
                     }
                 };
+                let background = self.box_paint(
+                    group.properties.corner_radius.as_ref(),
+                    group.properties.fill.as_ref(),
+                    group.properties.stroke.as_ref(),
+                    path,
+                    layer,
+                );
                 let clip = group.properties.clip.unwrap_or(false);
                 if clip && explicit_size.is_none() {
                     self.invalid(
@@ -528,6 +560,7 @@ impl SceneBuilder<'_> {
                 (
                     SceneKind::Group {
                         children,
+                        background: background?,
                         clip,
                         mask,
                     },

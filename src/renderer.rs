@@ -15,7 +15,7 @@ use usvg::Tree;
 use crate::assets::write_atomically;
 use crate::diagnostics::Diagnostic;
 use crate::document::{ImageFit, LineCap, LineJoin};
-use crate::scene::{Affine, Bounds, Scene, SceneKind, SceneNode, Stroke};
+use crate::scene::{Affine, Bounds, BoxPaint, Scene, SceneKind, SceneNode, Stroke};
 use crate::tokens::{Color, ColorStop, Paint};
 
 const MAX_OUTPUT_SIDE: f64 = 16384.0;
@@ -277,9 +277,14 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
         return;
     }
     let world = node.transform.then(parent);
-    let (clip, group_mask) = match &node.kind {
-        SceneKind::Group { clip, mask, .. } => (*clip, mask.as_deref()),
-        _ => (false, None),
+    let (clip, corner_radius, group_mask) = match &node.kind {
+        SceneKind::Group {
+            clip,
+            background,
+            mask,
+            ..
+        } => (*clip, background.corner_radius, mask.as_deref()),
+        _ => (false, 0.0, None),
     };
     if node.opacity >= 1.0 && !clip && group_mask.is_none() {
         draw_content(node, canvas, world);
@@ -294,7 +299,7 @@ fn draw_node(node: &SceneNode, canvas: &mut Pixmap, parent: Affine) {
         layer.apply_mask(&alpha_mask(group_mask, canvas, world));
     }
     let mask = clip
-        .then(|| clip_mask(canvas, node.bounds, world))
+        .then(|| clip_mask(canvas, node.bounds, corner_radius, world))
         .flatten();
     if clip && mask.is_none() {
         return;
@@ -321,8 +326,8 @@ fn alpha_mask(mask_node: &SceneNode, canvas: &Pixmap, world: Affine) -> Mask {
 }
 
 /// `None` for an empty clip, which hides everything inside it.
-fn clip_mask(canvas: &Pixmap, bounds: Bounds, world: Affine) -> Option<Mask> {
-    let path = rect_path(bounds, 0.0)?;
+fn clip_mask(canvas: &Pixmap, bounds: Bounds, corner_radius: f64, world: Affine) -> Option<Mask> {
+    let path = rect_path(bounds, corner_radius)?;
     let mut mask = Mask::new(canvas.width(), canvas.height())?;
     mask.fill_path(&path, FillRule::Winding, true, skia_transform(world));
     Some(mask)
@@ -331,18 +336,7 @@ fn clip_mask(canvas: &Pixmap, bounds: Bounds, world: Affine) -> Option<Mask> {
 fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
     let bounds = node.bounds;
     match &node.kind {
-        SceneKind::Rect {
-            corner_radius,
-            fill,
-            stroke,
-        } => {
-            if let Some(fill) = fill {
-                fill_rect(canvas, bounds, *corner_radius, fill, world);
-            }
-            if let (Some(stroke), Some(path)) = (stroke, rect_path(bounds, *corner_radius)) {
-                stroke_path(canvas, &path, stroke, world);
-            }
-        }
+        SceneKind::Rect(paint) => draw_box(canvas, paint, bounds, world),
         SceneKind::Ellipse { fill, stroke } => {
             let Some(path) = oval_path(bounds) else {
                 return;
@@ -372,7 +366,23 @@ fn draw_content(node: &SceneNode, canvas: &mut Pixmap, world: Affine) {
         }
         SceneKind::Image { image, fit, .. } => draw_image(canvas, image, *fit, bounds, world),
         SceneKind::Svg { tree, .. } => draw_svg(canvas, tree, bounds, world),
-        SceneKind::Group { children, .. } => draw_nodes(children, canvas, world),
+        SceneKind::Group {
+            children,
+            background,
+            ..
+        } => {
+            draw_box(canvas, background, bounds, world);
+            draw_nodes(children, canvas, world);
+        }
+    }
+}
+
+fn draw_box(canvas: &mut Pixmap, paint: &BoxPaint, bounds: Bounds, world: Affine) {
+    if let Some(fill) = &paint.fill {
+        fill_rect(canvas, bounds, paint.corner_radius, fill, world);
+    }
+    if let (Some(stroke), Some(path)) = (&paint.stroke, rect_path(bounds, paint.corner_radius)) {
+        stroke_path(canvas, &path, stroke, world);
     }
 }
 
@@ -948,6 +958,38 @@ mod tests {
         assert_eq!(pixel(&canvas, 5, 50), EMPTY);
         assert_eq!(pixel(&canvas, 15, 50), RED);
         assert_eq!(pixel(&canvas, 25, 50), EMPTY);
+    }
+
+    #[test]
+    fn a_group_paints_its_background_behind_children_and_clips_to_its_corners() {
+        let frame = frame_with(
+            r##"{ "id": "card", "type": "group", "x": 10, "y": 10, "width": 40, "height": 40,
+                  "cornerRadius": 20, "clip": true, "fill": { "color": "#FF0000" },
+                  "children": [
+                { "id": "half", "type": "rect", "width": 20, "height": 40,
+                  "fill": { "color": "#0000FF" } } ] }"##,
+        );
+        let canvas = render_json(&frame, "{}");
+
+        assert_eq!(pixel(&canvas, 25, 30), [0, 0, 255, 255]);
+        assert_eq!(pixel(&canvas, 40, 30), RED);
+        // The child reaches this corner, but the rounded clip cuts it off.
+        assert_eq!(pixel(&canvas, 11, 11), EMPTY);
+    }
+
+    #[test]
+    fn a_group_sized_by_its_children_paints_the_box_around_them() {
+        let frame = frame_with(&format!(
+            r##"{{ "id": "row", "type": "group", "fill": {{ "color": "#0000FF" }},
+                   "children": [{}, {}] }}"##,
+            red_square("left", 10, 10),
+            red_square("right", 40, 10)
+        ));
+        let canvas = render_json(&frame, "{}");
+
+        assert_eq!(pixel(&canvas, 15, 15), RED);
+        assert_eq!(pixel(&canvas, 30, 15), [0, 0, 255, 255]);
+        assert_eq!(pixel(&canvas, 55, 15), EMPTY);
     }
 
     #[test]
