@@ -11,8 +11,27 @@ to whatever else lives there.
 Run `command -v forma` first. If it is missing, stop and tell the user: Forma is installed with
 `brew install namzug16/tap/forma`.
 
-If `forma/config.json` exists in the repo, skip to [Designing](#designing). Otherwise start with
-[Setting up](#setting-up).
+## Check the design system first
+
+Every design depends on an established design system, so check for one before any other step,
+every time the user asks for Forma. It is established only when all of these hold:
+
+- `forma/config.json` exists.
+- `forma/DESIGN.md` exists and describes the brand.
+- `forma/tokens.json` holds the user's values, not the starter placeholders from `forma init`
+  (those include the colors `#E8FF57` and `#914DFF`).
+
+If any check fails, stop what you are doing: don't write frames, don't run `forma init`, and don't
+invent tokens or a style to get unblocked. Tell the user that the design system has to be defined
+first, and ask for it:
+
+- the brand and how it should feel
+- colors, and what each one is for
+- fonts, with weights and sizes for headings and body text
+- logos, and any images of the style they want
+
+Once they answer, follow [Setting up](#setting-up), then return to their original request through
+[Designing](#designing). If the system is established, go straight to [Designing](#designing).
 
 `forma schema` is the authority on which properties exist. Read
 [references/format.md](references/format.md) before writing your first frame: it covers what the
