@@ -88,6 +88,7 @@ fn describe_node(
         "effectiveOpacity": effective.opacity,
         "localTransform": node.transform,
         "worldTransform": layout.world,
+        "sizing": node.sizing,
         "localBounds": node.bounds,
         "worldBounds": layout.world_bounds,
         "clippedBounds": layout.clipped_bounds,

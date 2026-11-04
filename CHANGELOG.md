@@ -8,6 +8,10 @@ Each release's section is published as its GitHub release notes.
 
 - Groups take `fill`, `stroke` and `cornerRadius` to paint a background behind their children, so a
   card is one group. Clipping follows the rounded corners.
+- `width` and `height` accept `"hug"`, `"fill"` and percentages such as `"50%"`, measured against
+  the parent group or the frame, and every layer takes `minWidth`, `maxWidth`, `minHeight` and
+  `maxHeight`. Text that hugs wraps at its `maxWidth`. A group may hug one axis and set the other,
+  and can clip without an explicit size. `forma inspect` reports how each size was authored.
 
 ## 0.2.0 - 2026-11-03
 

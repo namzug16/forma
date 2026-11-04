@@ -12,8 +12,21 @@ use crate::diagnostics::{Diagnostic, Failure};
 pub const SUPPORTED_DOCUMENT_VERSION: u32 = 1;
 const MAX_NESTING_DEPTH: usize = 64;
 
-const COMMON_PROPERTIES: [&str; 10] = [
-    "id", "x", "y", "anchor", "pivot", "rotation", "scaleX", "scaleY", "opacity", "visible",
+const COMMON_PROPERTIES: [&str; 14] = [
+    "id",
+    "x",
+    "y",
+    "anchor",
+    "pivot",
+    "rotation",
+    "scaleX",
+    "scaleY",
+    "opacity",
+    "visible",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
 ];
 const ROOT_TRANSFORM_PROPERTIES: [&str; 7] =
     ["x", "y", "anchor", "pivot", "rotation", "scaleX", "scaleY"];
@@ -25,6 +38,58 @@ const FUTURE_PROPERTIES: [&str; 3] = ["mask", "effects", "blendMode"];
 pub enum NumberValue {
     Literal(f64),
     Token(String),
+}
+
+/// A box size: a number, a `$token`, `"hug"`, `"fill"` or a percentage such as `"50%"`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "NumberValue")]
+pub enum SizeValue {
+    Number(NumberValue),
+    /// Fit the content.
+    Hug,
+    /// Take the parent's whole size on this axis.
+    Fill,
+    /// A share of the parent's size, `50.0` for `"50%"`.
+    Percent(f64),
+}
+
+impl TryFrom<NumberValue> for SizeValue {
+    type Error = String;
+
+    fn try_from(value: NumberValue) -> Result<Self, Self::Error> {
+        let NumberValue::Token(text) = &value else {
+            return Ok(Self::Number(value));
+        };
+        let percent = text
+            .strip_suffix('%')
+            .and_then(|number| number.parse::<f64>().ok())
+            .filter(|number| number.is_finite() && *number >= 0.0);
+        match (text.as_str(), percent) {
+            ("hug", _) => Ok(Self::Hug),
+            ("fill", _) => Ok(Self::Fill),
+            (_, Some(percent)) => Ok(Self::Percent(percent)),
+            (token, _) if token.starts_with('$') => Ok(Self::Number(value)),
+            (other, _) => Err(format!(
+                "expected a number, a $token, \"hug\", \"fill\" or a percentage, found \"{other}\""
+            )),
+        }
+    }
+}
+
+impl JsonSchema for SizeValue {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SizeValue".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A number, a $token reference, \"hug\", \"fill\" or a percentage of the parent such as \"50%\".",
+            "anyOf": [
+                { "type": "number" },
+                { "type": "string", "pattern": "^(\\$.+|hug|fill|[0-9]+(\\.[0-9]+)?%)$" }
+            ]
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -171,13 +236,18 @@ pub struct CommonProperties {
     pub scale_y: Option<f64>,
     pub opacity: Option<f64>,
     pub visible: Option<bool>,
+    /// Limits applied after `width` and `height` are resolved, whether hug, fill or fixed.
+    pub min_width: Option<NumberValue>,
+    pub max_width: Option<NumberValue>,
+    pub min_height: Option<NumberValue>,
+    pub max_height: Option<NumberValue>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RectProperties {
-    pub width: NumberValue,
-    pub height: NumberValue,
+    pub width: SizeValue,
+    pub height: SizeValue,
     pub corner_radius: Option<NumberValue>,
     pub fill: Option<Fill>,
     pub stroke: Option<Stroke>,
@@ -186,8 +256,8 @@ pub struct RectProperties {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EllipseProperties {
-    pub width: NumberValue,
-    pub height: NumberValue,
+    pub width: SizeValue,
+    pub height: SizeValue,
     pub fill: Option<Fill>,
     pub stroke: Option<Stroke>,
 }
@@ -196,8 +266,8 @@ pub struct EllipseProperties {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LineProperties {
-    pub width: NumberValue,
-    pub height: NumberValue,
+    pub width: SizeValue,
+    pub height: SizeValue,
     pub stroke: Stroke,
 }
 
@@ -205,8 +275,8 @@ pub struct LineProperties {
 #[serde(deny_unknown_fields)]
 pub struct TextProperties {
     pub text: String,
-    /// Wrapping width; omit to wrap only at explicit newlines.
-    pub width: Option<NumberValue>,
+    /// Wrapping width; omit or `"hug"` to wrap only at explicit newlines, or at `maxWidth`.
+    pub width: Option<SizeValue>,
     pub font: FontValue,
     pub align: Option<TextAlign>,
     pub fill: Fill,
@@ -217,8 +287,8 @@ pub struct TextProperties {
 pub struct ImageProperties {
     /// Path relative to the assets directory.
     pub src: String,
-    pub width: NumberValue,
-    pub height: NumberValue,
+    pub width: SizeValue,
+    pub height: SizeValue,
     pub fit: Option<ImageFit>,
 }
 
@@ -227,8 +297,8 @@ pub struct ImageProperties {
 pub struct SvgProperties {
     /// Path relative to the assets directory.
     pub src: String,
-    pub width: NumberValue,
-    pub height: NumberValue,
+    pub width: SizeValue,
+    pub height: SizeValue,
     /// Replaces `currentColor`; colors hard-coded in the file stay as they are.
     pub color: Option<String>,
 }
@@ -236,9 +306,10 @@ pub struct SvgProperties {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupProperties {
-    pub width: Option<NumberValue>,
-    pub height: Option<NumberValue>,
-    /// Clip children to the explicit width and height, following `cornerRadius`.
+    /// Omitted or `"hug"` takes the box around the children.
+    pub width: Option<SizeValue>,
+    pub height: Option<SizeValue>,
+    /// Clip children to the group's box, following `cornerRadius`.
     pub clip: Option<bool>,
     /// The background box is painted behind the children.
     pub corner_radius: Option<NumberValue>,

@@ -142,9 +142,16 @@ separate pivot the anchored point can move. Rotation is clockwise degrees.
 **Lines** run from the top-left to the bottom-right of their box, so a horizontal line has
 `height: 0`.
 
-**Groups** without a size take their bounds from their children. They keep their own origin at
-`(x, y)` unless an `anchor` is set, which then refers to those bounds. `"clip": true` needs an
-explicit `width` and `height`. Group opacity applies after the children are composited. `mask` is a
+**Sizes.** `width` and `height` take a number, a `$token`, `"fill"` (the parent's whole size on that
+axis) or a percentage of the parent such as `"50%"`. The parent is the frame or the enclosing group.
+`"hug"` fits the content and is only valid on groups and text, where it is also the default. Filling
+or taking a percentage of a parent that hugs on that axis is an error, because the sizes would depend
+on each other. `minWidth`, `maxWidth`, `minHeight` and `maxHeight` apply to every layer after its
+size is resolved.
+
+**Groups** that hug take their bounds from their children, per axis. A group hugging both axes keeps
+its own origin at `(x, y)` unless an `anchor` is set, which then refers to those bounds. `"clip":
+true` clips to the group's box. Group opacity applies after the children are composited. `mask` is a
 node in the group's coordinates; its alpha is multiplied into the composited group, so shapes fade
 or cut out the group's contents. Only groups accept a mask. `fill`, `stroke` and `cornerRadius`
 paint a background box behind the children, like a rect, and a clip follows the rounded corners.
@@ -155,8 +162,8 @@ of the box at any angle, as in CSS. Interpolation is in sRGB, on straight alpha.
 **Radial gradients.** `center` is normalized to the node's box. `radius` is normalized per axis, so
 the gradient ellipse has radii `radius × width` and `radius × height`.
 
-**Text.** The box height comes from the laid-out lines. Omit `width` to break only at newlines;
-that box is as wide as the longest line. Text is left-to-right in V1. `lineHeight` is a multiple of
+**Text.** The box height comes from the laid-out lines. Omit `width` or set `"hug"` to break only
+at newlines; that box is as wide as the longest line, and wraps at `maxWidth` if that is narrower. Text is left-to-right in V1. `lineHeight` is a multiple of
 `size`, and `letterSpacing` is pixels added after each glyph.
 
 **Fonts.** `file` is relative to the assets directory and takes precedence over `family`. `family`
